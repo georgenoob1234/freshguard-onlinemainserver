@@ -86,6 +86,23 @@ class AdminDeviceCommandRequest(StrictModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class DeviceStatusResponse(StrictModel):
+    device_id: str
+    label: Optional[str] = None
+    hostname: Optional[str] = None
+    os: Optional[str] = None
+    connector_version: Optional[str] = None
+    connected: bool
+    last_seen_at: Optional[str] = None
+    online: bool
+
+
+class AdminStoreDevicesResponse(StrictModel):
+    store_id: str
+    online_threshold_seconds: int
+    devices: list[DeviceStatusResponse]
+
+
 class BlobUploadResponse(StrictModel):
     blob_id: str
     size_bytes: int

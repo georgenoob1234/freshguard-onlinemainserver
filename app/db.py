@@ -72,6 +72,27 @@ def _migrate_scan_results_scan_id_to_image_id(connection: sqlite3.Connection) ->
     )
 
 
+def _migrate_devices_presence_columns(connection: sqlite3.Connection) -> None:
+    columns = _get_table_columns(connection, "devices")
+    if not columns:
+        return
+
+    has_legacy_last_seen = "last_seen_ts" in columns
+    if "last_seen_at" not in columns:
+        connection.execute("ALTER TABLE devices ADD COLUMN last_seen_at TEXT NULL")
+        if has_legacy_last_seen:
+            connection.execute(
+                """
+                UPDATE devices
+                SET last_seen_at = last_seen_ts
+                WHERE last_seen_at IS NULL AND last_seen_ts IS NOT NULL
+                """
+            )
+
+    if "connected_at" not in columns:
+        connection.execute("ALTER TABLE devices ADD COLUMN connected_at TEXT NULL")
+
+
 def init_db(database_path: str) -> None:
     connection = open_connection(database_path)
     try:
@@ -95,7 +116,9 @@ def init_db(database_path: str) -> None:
                 label TEXT NULL,
                 hostname TEXT NULL,
                 os TEXT NULL,
-                connector_version TEXT NULL
+                connector_version TEXT NULL,
+                last_seen_at TEXT NULL,
+                connected_at TEXT NULL
             );
 
             CREATE TABLE IF NOT EXISTS device_tokens (
@@ -129,6 +152,7 @@ def init_db(database_path: str) -> None:
             """
         )
         _migrate_scan_results_scan_id_to_image_id(connection)
+        _migrate_devices_presence_columns(connection)
         connection.commit()
     finally:
         connection.close()

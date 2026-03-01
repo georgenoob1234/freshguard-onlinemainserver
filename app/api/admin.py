@@ -12,12 +12,15 @@ from fastapi.responses import FileResponse
 
 from app.config import get_settings
 from app.db import get_db
+from app.device_status import compute_online, parse_db_utc_datetime, serialize_utc_datetime
 from app.models import (
     AdminDeviceCommandRequest,
     AdminCreateEnrollTokenRequest,
     AdminCreateEnrollTokenResponse,
+    AdminStoreDevicesResponse,
+    DeviceStatusResponse,
 )
-from app.realtime import CommandTimeoutError, send_command
+from app.realtime import CommandTimeoutError, connection_manager, send_command
 from app.security import constant_time_equals, generate_token, hash_token
 
 
@@ -33,6 +36,29 @@ def _require_admin_key(x_admin_key: str | None) -> None:
         or not constant_time_equals(x_admin_key, settings.admin_key)
     ):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _build_device_status_response(
+    row: sqlite3.Row,
+    *,
+    now_utc: datetime,
+    threshold_seconds: int,
+) -> DeviceStatusResponse:
+    last_seen_at = parse_db_utc_datetime(row["last_seen_at"])
+    return DeviceStatusResponse(
+        device_id=row["device_id"],
+        label=row["label"],
+        hostname=row["hostname"],
+        os=row["os"],
+        connector_version=row["connector_version"],
+        connected=connection_manager.is_connected(row["device_id"]),
+        last_seen_at=serialize_utc_datetime(last_seen_at),
+        online=compute_online(
+            last_seen_at=last_seen_at,
+            now_utc=now_utc,
+            threshold_seconds=threshold_seconds,
+        ),
+    )
 
 
 @router.post("/enroll_tokens", response_model=AdminCreateEnrollTokenResponse)
@@ -110,6 +136,83 @@ async def send_device_command(
             status_code=504,
             detail="Timed out waiting for connector response.",
         ) from error
+
+
+@router.get(
+    "/stores/{store_id}/devices",
+    response_model=AdminStoreDevicesResponse,
+)
+def list_store_devices(
+    store_id: str,
+    x_admin_key: str | None = Header(default=None, alias="X-ADMIN-KEY"),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> AdminStoreDevicesResponse:
+    _require_admin_key(x_admin_key)
+    settings = get_settings()
+
+    rows = connection.execute(
+        """
+        SELECT
+            device_id,
+            label,
+            hostname,
+            os,
+            connector_version,
+            last_seen_at
+        FROM devices
+        WHERE store_id = ?
+        ORDER BY created_at ASC
+        """,
+        (store_id,),
+    ).fetchall()
+
+    now_utc = datetime.now(timezone.utc)
+    devices = [
+        _build_device_status_response(
+            row,
+            now_utc=now_utc,
+            threshold_seconds=settings.online_threshold_seconds,
+        )
+        for row in rows
+    ]
+    return AdminStoreDevicesResponse(
+        store_id=store_id,
+        online_threshold_seconds=settings.online_threshold_seconds,
+        devices=devices,
+    )
+
+
+@router.get("/devices/{device_id}/status", response_model=DeviceStatusResponse)
+def get_device_status(
+    device_id: str,
+    x_admin_key: str | None = Header(default=None, alias="X-ADMIN-KEY"),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> DeviceStatusResponse:
+    _require_admin_key(x_admin_key)
+    settings = get_settings()
+
+    row = connection.execute(
+        """
+        SELECT
+            device_id,
+            label,
+            hostname,
+            os,
+            connector_version,
+            last_seen_at
+        FROM devices
+        WHERE device_id = ?
+        """,
+        (device_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    return _build_device_status_response(
+        row,
+        now_utc=datetime.now(timezone.utc),
+        threshold_seconds=settings.online_threshold_seconds,
+    )
 
 
 @router.get("/blobs/{blob_id}")

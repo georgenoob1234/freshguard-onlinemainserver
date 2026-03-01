@@ -60,46 +60,81 @@ def _rollback_quietly(connection: sqlite3.Connection) -> None:
         pass
 
 
+def _update_device_presence(
+    connection: sqlite3.Connection,
+    device_id: str,
+    *,
+    update_connected_at: bool = False,
+) -> None:
+    seen_at = datetime.now(timezone.utc).isoformat()
+    if update_connected_at:
+        connection.execute(
+            """
+            UPDATE devices
+            SET last_seen_at = ?, connected_at = ?
+            WHERE device_id = ?
+            """,
+            (seen_at, seen_at, device_id),
+        )
+    else:
+        connection.execute(
+            """
+            UPDATE devices
+            SET last_seen_at = ?
+            WHERE device_id = ?
+            """,
+            (seen_at, device_id),
+        )
+    connection.commit()
+
+
 @router.websocket("/ws")
 async def connector_websocket(websocket: WebSocket) -> None:
     settings = get_settings()
     authorization = websocket.headers.get("Authorization")
     connection = open_connection(settings.database_path)
     try:
-        token = extract_bearer_token(authorization)
-        device = resolve_device_from_bearer_token(token, connection)
-    except HTTPException as error:
-        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION) from error
+        try:
+            token = extract_bearer_token(authorization)
+            device = resolve_device_from_bearer_token(token, connection)
+        except HTTPException as error:
+            raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION) from error
+
+        await websocket.accept()
+        await connection_manager.connect(device.device_id, websocket)
+        _update_device_presence(
+            connection,
+            device.device_id,
+            update_connected_at=True,
+        )
+        logger.info("Connector WS connected device_id=%s", device.device_id)
+
+        try:
+            while True:
+                inbound_message = await websocket.receive_json()
+                connection_manager.mark_seen(device.device_id)
+                _update_device_presence(connection, device.device_id)
+
+                if not isinstance(inbound_message, dict):
+                    continue
+
+                if inbound_message.get("type") != "response":
+                    continue
+
+                payload = inbound_message.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+
+                request_id = payload.get("request_id")
+                if isinstance(request_id, str) and request_id:
+                    await command_broker.resolve_response(request_id, payload)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            await connection_manager.disconnect(device.device_id, websocket)
+            logger.info("Connector WS disconnected device_id=%s", device.device_id)
     finally:
         connection.close()
-
-    await websocket.accept()
-    await connection_manager.connect(device.device_id, websocket)
-    logger.info("Connector WS connected device_id=%s", device.device_id)
-
-    try:
-        while True:
-            inbound_message = await websocket.receive_json()
-            connection_manager.mark_seen(device.device_id)
-
-            if not isinstance(inbound_message, dict):
-                continue
-
-            if inbound_message.get("type") != "response":
-                continue
-
-            payload = inbound_message.get("payload")
-            if not isinstance(payload, dict):
-                continue
-
-            request_id = payload.get("request_id")
-            if isinstance(request_id, str) and request_id:
-                await command_broker.resolve_response(request_id, payload)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        await connection_manager.disconnect(device.device_id, websocket)
-        logger.info("Connector WS disconnected device_id=%s", device.device_id)
 
 
 @router.post("/register", response_model=RegisterResponse)

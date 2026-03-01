@@ -8,6 +8,7 @@ Set these before starting the app:
 - `SECRET_SALT` (required, used for `SHA-256(token + SECRET_SALT)`)
 - `DATABASE_PATH` (optional, default: `./data/onlinemainserver.db`)
 - `BLOB_STORAGE_DIR` (optional, default: `./data/blobs`)
+- `ONLINE_THRESHOLD_SECONDS` (optional, default: `60`)
 - `WS_HEARTBEAT_TIMEOUT_SECONDS` (optional, default: `60`)
 - `COMMAND_DEFAULT_TIMEOUT_SECONDS` (optional, default: `15`)
 - `BLOB_RETENTION_SECONDS` (optional, default: `86400` / 24h)
@@ -20,6 +21,7 @@ export ADMIN_KEY="change-me-admin-key"
 export SECRET_SALT="change-me-long-random-salt"
 export DATABASE_PATH="./data/onlinemainserver.db"
 export BLOB_STORAGE_DIR="./data/blobs"
+export ONLINE_THRESHOLD_SECONDS="60"
 export WS_HEARTBEAT_TIMEOUT_SECONDS="60"
 export COMMAND_DEFAULT_TIMEOUT_SECONDS="15"
 export BLOB_RETENTION_SECONDS="86400"
@@ -108,6 +110,26 @@ Example with `websocat`:
 websocat -H="Authorization: Bearer <DEVICE_TOKEN>" \
   ws://127.0.0.1:8000/connector/v1/ws
 ```
+
+## Device online status (admin)
+
+OMS stores device `last_seen_at` (UTC) on connector WS connect and on every inbound WS message.
+
+Online/offline is computed by:
+
+```text
+now_utc - last_seen_at <= ONLINE_THRESHOLD_SECONDS
+```
+
+Endpoints:
+
+- `GET /admin/v1/stores/{store_id}/devices` (header: `X-ADMIN-KEY`)
+- `GET /admin/v1/devices/{device_id}/status` (header: `X-ADMIN-KEY`)
+
+The response includes both:
+
+- `connected`: current in-memory websocket presence
+- `online`: computed from persisted `last_seen_at` and `ONLINE_THRESHOLD_SECONDS`
 
 ## Admin command dispatch endpoint
 
