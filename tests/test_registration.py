@@ -18,7 +18,26 @@ def client_and_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DATABASE_PATH", str(database_path))
 
     with TestClient(app) as client:
+        _seed_store(database_path, store_id="store-a", is_active=True)
         yield client, database_path
+
+
+def _seed_store(database_path: Path, *, store_id: str, is_active: bool) -> None:
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO stores (store_id, name, address, is_active, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                store_id,
+                f"Store {store_id}",
+                None,
+                1 if is_active else 0,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        connection.commit()
 
 
 def _create_enroll_token(
@@ -26,7 +45,7 @@ def _create_enroll_token(
     *,
     expires_in_sec: int = 600,
     max_uses: int = 1,
-    store_id: str | None = None,
+    store_id: str = "store-a",
     note: str | None = None,
 ) -> str:
     response = client.post(
@@ -86,6 +105,43 @@ def test_create_enroll_token_works_and_fails_without_valid_admin_key(client_and_
         headers={"X-ADMIN-KEY": "wrong-key"},
     )
     assert forbidden.status_code == 401
+
+
+def test_create_enroll_token_fails_when_store_does_not_exist(client_and_db):
+    client, _ = client_and_db
+
+    response = client.post(
+        "/admin/v1/enroll_tokens",
+        json={
+            "store_id": "missing-store",
+            "expires_in_sec": 600,
+            "max_uses": 1,
+            "note": "first connector",
+        },
+        headers={"X-ADMIN-KEY": "admin-test-key"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "unknown_store"}
+
+
+def test_create_enroll_token_fails_when_store_is_inactive(client_and_db):
+    client, database_path = client_and_db
+    _seed_store(database_path, store_id="inactive-store", is_active=False)
+
+    response = client.post(
+        "/admin/v1/enroll_tokens",
+        json={
+            "store_id": "inactive-store",
+            "expires_in_sec": 600,
+            "max_uses": 1,
+            "note": "first connector",
+        },
+        headers={"X-ADMIN-KEY": "admin-test-key"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "store_inactive"}
 
 
 def test_register_succeeds_with_valid_token(client_and_db):

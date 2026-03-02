@@ -21,6 +21,13 @@ def open_connection(database_path: str) -> sqlite3.Connection:
     return connection
 
 
+def rollback_quietly(connection: sqlite3.Connection) -> None:
+    try:
+        connection.execute("ROLLBACK")
+    except sqlite3.OperationalError:
+        pass
+
+
 def _get_table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
     rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
     return {row["name"] for row in rows}
@@ -93,11 +100,75 @@ def _migrate_devices_presence_columns(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE devices ADD COLUMN connected_at TEXT NULL")
 
 
+def _migrate_stores_columns(connection: sqlite3.Connection) -> None:
+    columns = _get_table_columns(connection, "stores")
+    if not columns:
+        return
+
+    if "display_name" not in columns:
+        connection.execute("ALTER TABLE stores ADD COLUMN display_name TEXT NULL")
+    if "name" not in columns:
+        connection.execute("ALTER TABLE stores ADD COLUMN name TEXT NULL")
+    if "updated_at" not in columns:
+        connection.execute("ALTER TABLE stores ADD COLUMN updated_at TEXT NULL")
+
+    refreshed_columns = _get_table_columns(connection, "stores")
+    has_name = "name" in refreshed_columns
+    has_display_name = "display_name" in refreshed_columns
+
+    if has_display_name and has_name:
+        connection.execute(
+            """
+            UPDATE stores
+            SET display_name = COALESCE(
+                NULLIF(TRIM(display_name), ''),
+                NULLIF(TRIM(name), ''),
+                store_id
+            )
+            WHERE display_name IS NULL OR TRIM(display_name) = ''
+            """
+        )
+        connection.execute(
+            """
+            UPDATE stores
+            SET name = display_name
+            WHERE (name IS NULL OR TRIM(name) = '') AND display_name IS NOT NULL
+            """
+        )
+    elif has_display_name:
+        connection.execute(
+            """
+            UPDATE stores
+            SET display_name = COALESCE(NULLIF(TRIM(display_name), ''), store_id)
+            WHERE display_name IS NULL OR TRIM(display_name) = ''
+            """
+        )
+
+    if "updated_at" in refreshed_columns:
+        connection.execute(
+            """
+            UPDATE stores
+            SET updated_at = COALESCE(updated_at, created_at)
+            WHERE updated_at IS NULL
+            """
+        )
+
+
 def init_db(database_path: str) -> None:
     connection = open_connection(database_path)
     try:
         connection.executescript(
             """
+            CREATE TABLE IF NOT EXISTS stores (
+                store_id TEXT PRIMARY KEY,
+                display_name TEXT NULL,
+                name TEXT NULL,
+                address TEXT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS enroll_tokens (
                 token_id TEXT PRIMARY KEY,
                 token_hash TEXT NOT NULL UNIQUE,
@@ -149,10 +220,42 @@ def init_db(database_path: str) -> None:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(device_id) REFERENCES devices(device_id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                is_banned INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS user_identities (
+                provider TEXT NOT NULL,
+                provider_user_id TEXT NOT NULL,
+                provider_chat_id TEXT NOT NULL,
+                username TEXT NULL,
+                display_name TEXT NULL,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (provider, provider_user_id),
+                FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_user_identities_user_id
+            ON user_identities(user_id);
+
+            CREATE TABLE IF NOT EXISTS user_context (
+                user_id TEXT PRIMARY KEY,
+                active_store_id TEXT NULL,
+                active_device_id TEXT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            );
             """
         )
         _migrate_scan_results_scan_id_to_image_id(connection)
         _migrate_devices_presence_columns(connection)
+        _migrate_stores_columns(connection)
         connection.commit()
     finally:
         connection.close()

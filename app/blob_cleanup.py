@@ -66,7 +66,8 @@ async def run_blob_cleanup_loop(
 ) -> None:
     while True:
         try:
-            deleted_count = cleanup_expired_blobs_once(
+            deleted_count = await asyncio.to_thread(
+                cleanup_expired_blobs_once,
                 database_path=database_path,
                 retention_s=retention_s,
             )
@@ -77,3 +78,4 @@ async def run_blob_cleanup_loop(
             raise
         except Exception:
             logger.exception("Blob cleanup loop iteration failed")
+            await asyncio.sleep(interval_s)

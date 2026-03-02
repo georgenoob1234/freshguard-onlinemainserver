@@ -11,19 +11,12 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.auth import Device, resolve_authenticated_device
-from app.db import get_db
+from app.db import get_db, rollback_quietly
 from app.models import UpdateEnvelopeRequest, UpdateResponse
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["update"])
-
-
-def _rollback_quietly(connection: sqlite3.Connection) -> None:
-    try:
-        connection.execute("ROLLBACK")
-    except sqlite3.OperationalError:
-        pass
 
 
 @router.post("/update", response_model=UpdateResponse)
@@ -91,7 +84,8 @@ def ingest_update(
         ] == 1
         connection.execute("COMMIT")
     except Exception:
-        _rollback_quietly(connection)
+        rollback_quietly(connection)
+        logger.exception("Unexpected failure while ingesting update.")
         return JSONResponse(status_code=500, content={"detail": "Internal server error."})
 
     duplicate = not inserted

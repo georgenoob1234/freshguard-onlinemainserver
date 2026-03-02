@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import sqlite3
 from pathlib import Path
 
@@ -7,6 +8,24 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+
+
+def _seed_store(database_path: Path, *, store_id: str, is_active: bool) -> None:
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO stores (store_id, name, address, is_active, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                store_id,
+                f"Store {store_id}",
+                None,
+                1 if is_active else 0,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        connection.commit()
 
 
 @pytest.fixture()
@@ -17,6 +36,7 @@ def client_and_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DATABASE_PATH", str(database_path))
 
     with TestClient(app) as client:
+        _seed_store(database_path, store_id="store-a", is_active=True)
         yield client, database_path
 
 

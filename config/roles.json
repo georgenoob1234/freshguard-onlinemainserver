@@ -1,0 +1,7 @@
+{
+  "roles": {
+    "root": ["*"],
+    "operator": ["devices.list", "devices.status.read"],
+    "viewer": ["devices.status.read"]
+  }
+}

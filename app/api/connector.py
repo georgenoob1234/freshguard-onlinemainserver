@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import logging
 from pathlib import Path
 import sqlite3
-from typing import Any
 import uuid
 
 from fastapi import (
@@ -30,10 +30,10 @@ from app.auth import (
     resolve_device_from_bearer_token,
 )
 from app.config import get_settings
-from app.db import get_db, open_connection
+from app.db import get_db, open_connection, rollback_quietly
 from app.models import BlobUploadResponse, RegisterRequest, RegisterResponse
 from app.realtime import command_broker, connection_manager
-from app.security import constant_time_equals, generate_token, hash_token
+from app.security import generate_token, hash_token
 
 
 logger = logging.getLogger(__name__)
@@ -53,88 +53,90 @@ def _error_response(error_code: str, detail: str, status_code: int) -> JSONRespo
     )
 
 
-def _rollback_quietly(connection: sqlite3.Connection) -> None:
-    try:
-        connection.execute("ROLLBACK")
-    except sqlite3.OperationalError:
-        pass
-
-
 def _update_device_presence(
-    connection: sqlite3.Connection,
+    database_path: str,
     device_id: str,
     *,
     update_connected_at: bool = False,
 ) -> None:
-    seen_at = datetime.now(timezone.utc).isoformat()
-    if update_connected_at:
-        connection.execute(
-            """
-            UPDATE devices
-            SET last_seen_at = ?, connected_at = ?
-            WHERE device_id = ?
-            """,
-            (seen_at, seen_at, device_id),
-        )
-    else:
-        connection.execute(
-            """
-            UPDATE devices
-            SET last_seen_at = ?
-            WHERE device_id = ?
-            """,
-            (seen_at, device_id),
-        )
-    connection.commit()
+    seen_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    connection = open_connection(database_path)
+    try:
+        if update_connected_at:
+            connection.execute(
+                """
+                UPDATE devices
+                SET last_seen_at = ?, connected_at = ?
+                WHERE device_id = ?
+                """,
+                (seen_at, seen_at, device_id),
+            )
+        else:
+            connection.execute(
+                """
+                UPDATE devices
+                SET last_seen_at = ?
+                WHERE device_id = ?
+                """,
+                (seen_at, device_id),
+            )
+        connection.commit()
+    finally:
+        connection.close()
 
 
 @router.websocket("/ws")
 async def connector_websocket(websocket: WebSocket) -> None:
     settings = get_settings()
     authorization = websocket.headers.get("Authorization")
-    connection = open_connection(settings.database_path)
     try:
+        token = extract_bearer_token(authorization)
+        auth_connection = open_connection(settings.database_path)
         try:
-            token = extract_bearer_token(authorization)
-            device = resolve_device_from_bearer_token(token, connection)
-        except HTTPException as error:
-            raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION) from error
-
-        await websocket.accept()
-        await connection_manager.connect(device.device_id, websocket)
-        _update_device_presence(
-            connection,
-            device.device_id,
-            update_connected_at=True,
-        )
-        logger.info("Connector WS connected device_id=%s", device.device_id)
-
-        try:
-            while True:
-                inbound_message = await websocket.receive_json()
-                connection_manager.mark_seen(device.device_id)
-                _update_device_presence(connection, device.device_id)
-
-                if not isinstance(inbound_message, dict):
-                    continue
-
-                if inbound_message.get("type") != "response":
-                    continue
-
-                payload = inbound_message.get("payload")
-                if not isinstance(payload, dict):
-                    continue
-
-                request_id = payload.get("request_id")
-                if isinstance(request_id, str) and request_id:
-                    await command_broker.resolve_response(request_id, payload)
-        except WebSocketDisconnect:
-            pass
+            device = resolve_device_from_bearer_token(token, auth_connection)
         finally:
-            await connection_manager.disconnect(device.device_id, websocket)
-            logger.info("Connector WS disconnected device_id=%s", device.device_id)
+            auth_connection.close()
+    except HTTPException as error:
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION) from error
+
+    await connection_manager.connect(device.device_id, websocket)
+    await asyncio.to_thread(
+        _update_device_presence,
+        settings.database_path,
+        device.device_id,
+        update_connected_at=True,
+    )
+    await websocket.accept()
+    logger.info("Connector WS connected device_id=%s", device.device_id)
+
+    try:
+        while True:
+            inbound_message = await websocket.receive_json()
+            await connection_manager.mark_seen(device.device_id)
+            await asyncio.to_thread(
+                _update_device_presence,
+                settings.database_path,
+                device.device_id,
+            )
+
+            if not isinstance(inbound_message, dict):
+                continue
+
+            if inbound_message.get("type") != "response":
+                continue
+
+            payload = inbound_message.get("payload")
+            if not isinstance(payload, dict):
+                continue
+
+            request_id = payload.get("request_id")
+            if isinstance(request_id, str) and request_id:
+                await command_broker.resolve_response(request_id, payload)
+    except WebSocketDisconnect:
+        pass
     finally:
-        connection.close()
+        await connection_manager.disconnect(device.device_id, websocket)
+        logger.info("Connector WS disconnected device_id=%s", device.device_id)
 
 
 @router.post("/register", response_model=RegisterResponse)
@@ -150,7 +152,7 @@ def register_connector(
 
         enroll_token_row = connection.execute(
             """
-            SELECT token_id, token_hash, store_id, expires_at
+            SELECT token_id, store_id, expires_at
             FROM enroll_tokens
             WHERE token_hash = ?
             """,
@@ -161,12 +163,6 @@ def register_connector(
             raise RegistrationError(
                 error_code="TOKEN_INVALID",
                 detail="Enroll token was not found.",
-            )
-
-        if not constant_time_equals(enroll_token_row["token_hash"], enroll_token_hash):
-            raise RegistrationError(
-                error_code="TOKEN_INVALID",
-                detail="Enroll token validation failed.",
             )
 
         expires_at = datetime.fromisoformat(enroll_token_row["expires_at"])
@@ -237,10 +233,11 @@ def register_connector(
             ws_url=None,
         )
     except RegistrationError as error:
-        _rollback_quietly(connection)
+        rollback_quietly(connection)
         return _error_response(error.error_code, error.detail, 400)
     except Exception:
-        _rollback_quietly(connection)
+        rollback_quietly(connection)
+        logger.exception("Unexpected failure while registering connector.")
         return _error_response(
             error_code="INTERNAL_ERROR",
             detail="Internal server error.",
@@ -258,12 +255,24 @@ def upload_blob(
     connection: sqlite3.Connection = Depends(get_db),
 ) -> BlobUploadResponse:
     _ = image_id
-    blob_bytes = file.file.read()
+    settings = get_settings()
+    max_blob_size = settings.max_blob_size_bytes
+    blob_chunks: list[bytes] = []
+    total_size = 0
+    while True:
+        chunk = file.file.read(64 * 1024)
+        if not chunk:
+            break
+        total_size += len(chunk)
+        if total_size > max_blob_size:
+            raise HTTPException(status_code=413, detail="Blob too large")
+        blob_chunks.append(chunk)
+    blob_bytes = b"".join(blob_chunks)
+
     checksum = hashlib.sha256(blob_bytes).hexdigest()
     if sha256 is not None and sha256.strip().lower() != checksum:
         raise HTTPException(status_code=400, detail="sha256 mismatch")
 
-    settings = get_settings()
     storage_dir = Path(settings.blob_storage_dir)
     storage_dir.mkdir(parents=True, exist_ok=True)
     blob_id = str(uuid.uuid4())

@@ -8,16 +8,19 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.api.admin import router as admin_router
+from app.api.bot import router as bot_router
 from app.blob_cleanup import run_blob_cleanup_loop
 from app.api.connector import router as connector_router
 from app.api.update import router as update_router
 from app.config import get_settings
 from app.db import init_db
+from app.roles import load_roles_config
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings = get_settings()
+    load_roles_config(settings.roles_config_path)
     init_db(settings.database_path)
     cleanup_task = asyncio.create_task(
         run_blob_cleanup_loop(
@@ -36,6 +39,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="OnlineMainServer", lifespan=lifespan)
 app.include_router(admin_router)
+app.include_router(bot_router)
 app.include_router(connector_router)
 app.include_router(update_router)
 

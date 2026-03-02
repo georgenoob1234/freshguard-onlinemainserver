@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-import threading
 from typing import Any
 import uuid
 
@@ -10,53 +9,69 @@ from fastapi import HTTPException, WebSocket
 
 
 def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class ConnectionManager:
     def __init__(self) -> None:
         self._connections: dict[str, WebSocket] = {}
         self._last_seen_ts: dict[str, str] = {}
-        self._lock = threading.RLock()
+        self._connections_snapshot: dict[str, WebSocket] = {}
+        self._last_seen_snapshot: dict[str, str] = {}
+        self._lock = asyncio.Lock()
+
+    def _refresh_snapshots(self) -> None:
+        self._connections_snapshot = dict(self._connections)
+        self._last_seen_snapshot = dict(self._last_seen_ts)
 
     async def connect(self, device_id: str, websocket: WebSocket) -> None:
         old_websocket: WebSocket | None
-        with self._lock:
+        async with self._lock:
             old_websocket = self._connections.get(device_id)
             self._connections[device_id] = websocket
             self._last_seen_ts[device_id] = _utcnow_iso()
+            self._refresh_snapshots()
 
         if old_websocket is not None and old_websocket is not websocket:
             await old_websocket.close(code=1000)
 
     async def disconnect(self, device_id: str, websocket: WebSocket) -> None:
-        with self._lock:
+        async with self._lock:
             current = self._connections.get(device_id)
             if current is websocket:
                 self._connections.pop(device_id, None)
                 self._last_seen_ts.pop(device_id, None)
+                self._refresh_snapshots()
 
-    def mark_seen(self, device_id: str) -> None:
-        with self._lock:
+    async def mark_seen(self, device_id: str) -> None:
+        async with self._lock:
             if device_id in self._connections:
                 self._last_seen_ts[device_id] = _utcnow_iso()
+                self._refresh_snapshots()
 
     def get_connection(self, device_id: str) -> WebSocket | None:
-        with self._lock:
-            return self._connections.get(device_id)
+        websocket = self._connections_snapshot.get(device_id)
+        if websocket is None:
+            return None
+
+        # Treat sockets that are already transitioning out as disconnected.
+        if (
+            websocket.client_state.name != "CONNECTED"
+            or websocket.application_state.name != "CONNECTED"
+        ):
+            return None
+        return websocket
 
     def is_connected(self, device_id: str) -> bool:
-        with self._lock:
-            return device_id in self._connections
+        return self.get_connection(device_id) is not None
 
     def get_last_seen(self, device_id: str) -> str | None:
-        with self._lock:
-            return self._last_seen_ts.get(device_id)
+        return self._last_seen_snapshot.get(device_id)
 
     def clear(self) -> None:
-        with self._lock:
-            self._connections.clear()
-            self._last_seen_ts.clear()
+        self._connections.clear()
+        self._last_seen_ts.clear()
+        self._refresh_snapshots()
 
 
 class CommandTimeoutError(TimeoutError):

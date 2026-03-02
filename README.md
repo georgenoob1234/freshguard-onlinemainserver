@@ -4,10 +4,13 @@
 
 Set these before starting the app:
 
-- `ADMIN_KEY` (required for `POST /admin/v1/enroll_tokens`)
+- `ADMIN_KEY` (required; OMS fails to start if missing)
 - `SECRET_SALT` (required, used for `SHA-256(token + SECRET_SALT)`)
+- `TGBOT_SERVICE_TOKEN` (required in production for `/bot/v1/*` service auth)
 - `DATABASE_PATH` (optional, default: `./data/onlinemainserver.db`)
+- `ROLES_CONFIG_PATH` (optional, default: `./config/roles.json`)
 - `BLOB_STORAGE_DIR` (optional, default: `./data/blobs`)
+- `MAX_BLOB_SIZE_BYTES` (optional, default: `52428800` / 50 MB)
 - `ONLINE_THRESHOLD_SECONDS` (optional, default: `60`)
 - `WS_HEARTBEAT_TIMEOUT_SECONDS` (optional, default: `60`)
 - `COMMAND_DEFAULT_TIMEOUT_SECONDS` (optional, default: `15`)
@@ -19,8 +22,11 @@ Example:
 ```bash
 export ADMIN_KEY="change-me-admin-key"
 export SECRET_SALT="change-me-long-random-salt"
+export TGBOT_SERVICE_TOKEN="change-me-bot-service-token"
 export DATABASE_PATH="./data/onlinemainserver.db"
+export ROLES_CONFIG_PATH="./config/roles.json"
 export BLOB_STORAGE_DIR="./data/blobs"
+export MAX_BLOB_SIZE_BYTES="52428800"
 export ONLINE_THRESHOLD_SECONDS="60"
 export WS_HEARTBEAT_TIMEOUT_SECONDS="60"
 export COMMAND_DEFAULT_TIMEOUT_SECONDS="15"
@@ -33,6 +39,73 @@ export BLOB_CLEANUP_INTERVAL_SECONDS="300"
 ```bash
 pip install -r requirements.txt
 uvicorn app.main:app --reload
+```
+
+## Bot service endpoints
+
+All `/bot/v1/*` endpoints require:
+
+- `Authorization: Bearer <TGBOT_SERVICE_TOKEN>`
+
+Health check:
+
+```bash
+curl -sS "http://127.0.0.1:8000/bot/v1/health" \
+  -H "Authorization: Bearer ${TGBOT_SERVICE_TOKEN}"
+```
+
+Ensure bot session:
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8000/bot/v1/session/ensure" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${TGBOT_SERVICE_TOKEN}" \
+  -d '{
+    "provider": "telegram",
+    "provider_user_id": "123456789",
+    "provider_chat_id": "123456789",
+    "username": "example_user",
+    "display_name": "Example User"
+  }'
+```
+
+## Admin user ban/unban
+
+Admins can lookup bot users and update ban state:
+
+- `GET /admin/v1/users/lookup?provider=telegram&provider_user_id=<ID>`
+- `GET /admin/v1/users/lookup?provider=telegram&username=<USERNAME>`
+- `PATCH /admin/v1/users/{user_id}`
+- Header: `X-ADMIN-KEY: <ADMIN_KEY>`
+
+Lookup example:
+
+```bash
+curl -sS "http://127.0.0.1:8000/admin/v1/users/lookup?provider=telegram&username=@example_user" \
+  -H "X-ADMIN-KEY: ${ADMIN_KEY}"
+```
+
+Ban/unban update example:
+
+```bash
+curl -sS -X PATCH "http://127.0.0.1:8000/admin/v1/users/<USER_ID>" \
+  -H "Content-Type: application/json" \
+  -H "X-ADMIN-KEY: ${ADMIN_KEY}" \
+  -d '{"is_banned": true, "reason": "policy_violation"}'
+```
+
+## Seed stores table (required for enroll tokens)
+
+`POST /admin/v1/enroll_tokens` only accepts active stores that already exist in `stores`.
+
+Manual seed example:
+
+```bash
+sqlite3 "${DATABASE_PATH}" "
+INSERT INTO stores (store_id, name, address, is_active, created_at)
+VALUES ('store-1', 'Store 1', NULL, 1, datetime('now'))
+ON CONFLICT(store_id) DO UPDATE SET is_active = 1;
+"
 ```
 
 ## Create enroll token (admin)
@@ -159,6 +232,7 @@ For `camera.capture`, upload binary bytes over HTTP:
 - `POST /connector/v1/blobs`
 - Header: `Authorization: Bearer <DEVICE_TOKEN>`
 - Body: `multipart/form-data` with required `file` field and optional `image_id`, `content_type`, `sha256`.
+- Files larger than `MAX_BLOB_SIZE_BYTES` are rejected with HTTP `413`.
 
 Example:
 
