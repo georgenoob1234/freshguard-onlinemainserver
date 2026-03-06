@@ -9,6 +9,7 @@ from app.roles import (
     RolesConfigError,
     clear_roles_cache,
     get_role_permissions,
+    is_known_role,
     is_permission_granted,
     load_roles_config,
 )
@@ -45,6 +46,8 @@ def test_roles_loader_loads_valid_roles(tmp_path: Path, monkeypatch: pytest.Monk
     assert loaded["root"] == frozenset({"*"})
     assert get_role_permissions("operator") == {"devices.list", "devices.status.read"}
     assert get_role_permissions("missing-role") == set()
+    assert is_known_role("operator") is True
+    assert is_known_role("missing-role") is False
     assert is_permission_granted("operator", "devices.list") is True
     assert is_permission_granted("operator", "devices.delete") is False
     assert is_permission_granted("root", "anything") is True
@@ -95,3 +98,17 @@ def test_roles_loader_fails_when_root_is_missing_or_invalid(
 
     with pytest.raises(RolesConfigError, match=expected_error):
         load_roles_config()
+
+
+def test_default_roles_config_includes_milestone_2_permissions(monkeypatch: pytest.MonkeyPatch):
+    roles_path = Path(__file__).resolve().parents[1] / "config" / "roles.json"
+    monkeypatch.setenv("ROLES_CONFIG_PATH", str(roles_path))
+
+    loaded = load_roles_config()
+    assert "store_admin" in loaded
+    assert "auditor" in loaded
+    assert is_known_role("store_admin") is True
+    assert is_permission_granted("store_admin", "invites.create") is True
+    assert is_permission_granted("operator", "memberships.revoke.self") is True
+    assert is_permission_granted("viewer", "bot.user_context.read") is True
+    assert is_permission_granted("auditor", "results.read.history") is True

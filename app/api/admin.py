@@ -4,14 +4,14 @@ from datetime import datetime, timedelta, timezone
 import logging
 from pathlib import Path
 import sqlite3
-from typing import Any
+from typing import Any, Literal
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
 from app.config import get_settings
-from app.db import get_db
+from app.db import get_db, rollback_quietly
 from app.device_status import compute_online, parse_db_utc_datetime, serialize_utc_datetime
 from app.models import (
     AdminCreateEnrollTokenRequest,
@@ -20,15 +20,19 @@ from app.models import (
     AdminDeviceCommandRequest,
     AdminLookupUserCandidate,
     AdminLookupUserResponse,
+    AdminStoreMembership,
     AdminStore,
     AdminStoreDevicesResponse,
     AdminStoreListResponse,
+    AdminUpsertStoreMembershipRequest,
+    AdminUpsertStoreMembershipResponse,
     AdminUpdateUserBanRequest,
     AdminUpdateUserBanResponse,
     AdminUpdateStoreRequest,
     DeviceStatusResponse,
 )
 from app.realtime import CommandTimeoutError, connection_manager, send_command
+from app.roles import is_known_role
 from app.security import constant_time_equals, generate_token, hash_token
 
 
@@ -192,6 +196,116 @@ def _lookup_candidates_by_username(
         """,
         (provider, normalized_username),
     ).fetchall()
+
+
+def _require_user_row(
+    connection: sqlite3.Connection,
+    *,
+    user_id: str,
+) -> sqlite3.Row:
+    row = connection.execute(
+        """
+        SELECT user_id, is_banned
+        FROM users
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="user_not_found")
+    return row
+
+
+def _require_not_banned(user_row: sqlite3.Row) -> None:
+    if int(user_row["is_banned"]) == 1:
+        raise HTTPException(status_code=403, detail="user_banned")
+
+
+def _normalize_membership_role(role_name: str) -> str:
+    normalized = role_name.strip().lower()
+    if not is_known_role(normalized):
+        raise HTTPException(status_code=400, detail="unknown_role")
+    return normalized
+
+
+def _select_active_membership_row(
+    connection: sqlite3.Connection,
+    *,
+    user_id: str,
+    store_id: str,
+) -> sqlite3.Row | None:
+    return connection.execute(
+        """
+        SELECT
+            membership_id,
+            user_id,
+            store_id,
+            role,
+            created_at,
+            revoked_at,
+            created_by_user_id,
+            note
+        FROM store_memberships
+        WHERE user_id = ? AND store_id = ? AND revoked_at IS NULL
+        ORDER BY created_at ASC, membership_id ASC
+        LIMIT 1
+        """,
+        (user_id, store_id),
+    ).fetchone()
+
+
+def _membership_row_to_model(row: sqlite3.Row) -> AdminStoreMembership:
+    return AdminStoreMembership(
+        membership_id=row["membership_id"],
+        user_id=row["user_id"],
+        store_id=row["store_id"],
+        role=row["role"],
+        created_at=row["created_at"],
+        revoked_at=row["revoked_at"],
+        created_by_user_id=row["created_by_user_id"],
+        note=row["note"],
+    )
+
+
+def _get_user_context_row(
+    connection: sqlite3.Connection,
+    *,
+    user_id: str,
+) -> sqlite3.Row | None:
+    return connection.execute(
+        """
+        SELECT active_store_id, active_device_id
+        FROM user_context
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    ).fetchone()
+
+
+def _upsert_user_context(
+    connection: sqlite3.Connection,
+    *,
+    user_id: str,
+    active_store_id: str | None,
+    active_device_id: str | None,
+    updated_at: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO user_context (
+            user_id,
+            active_store_id,
+            active_device_id,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            active_store_id = excluded.active_store_id,
+            active_device_id = excluded.active_device_id,
+            updated_at = excluded.updated_at
+        """,
+        (user_id, active_store_id, active_device_id, updated_at),
+    )
 
 
 @router.post("/stores", response_model=AdminStore, status_code=201)
@@ -435,13 +549,19 @@ def update_user_ban_state(
     if existing_row is None:
         raise HTTPException(status_code=404, detail="user_not_found")
 
+    updated_at = datetime.now(timezone.utc).isoformat()
     connection.execute(
         """
         UPDATE users
-        SET is_banned = ?
+        SET is_banned = ?, ban_reason = ?, updated_at = ?
         WHERE user_id = ?
         """,
-        (1 if payload.is_banned else 0, user_id),
+        (
+            1 if payload.is_banned else 0,
+            payload.reason if payload.is_banned else None,
+            updated_at,
+            user_id,
+        ),
     )
     connection.commit()
 
@@ -465,6 +585,123 @@ def update_user_ban_state(
         user_id=updated_row["user_id"],
         is_banned=int(updated_row["is_banned"]) == 1,
         last_seen_at=updated_row["last_seen_at"],
+    )
+
+
+@router.put(
+    "/users/{user_id}/stores/{store_id}/membership",
+    response_model=AdminUpsertStoreMembershipResponse,
+)
+def upsert_user_store_membership(
+    user_id: str,
+    store_id: str,
+    payload: AdminUpsertStoreMembershipRequest,
+    x_admin_key: str | None = Header(default=None, alias="X-ADMIN-KEY"),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> AdminUpsertStoreMembershipResponse:
+    _require_admin_key(x_admin_key)
+
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        user_row = _require_user_row(connection, user_id=user_id)
+        _require_not_banned(user_row)
+        _require_store_row(connection, store_id=store_id)
+        normalized_role = _normalize_membership_role(payload.role)
+        now = datetime.now(timezone.utc).isoformat()
+
+        membership_row = _select_active_membership_row(
+            connection,
+            user_id=user_id,
+            store_id=store_id,
+        )
+        status: Literal["created", "updated"]
+        if membership_row is None:
+            membership_id = str(uuid.uuid4())
+            connection.execute(
+                """
+                INSERT INTO store_memberships (
+                    membership_id,
+                    store_id,
+                    user_id,
+                    role,
+                    created_at,
+                    revoked_at,
+                    created_by_user_id,
+                    note
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (membership_id, store_id, user_id, normalized_role, now, None, None, "admin_api"),
+            )
+            status = "created"
+        else:
+            connection.execute(
+                """
+                UPDATE store_memberships
+                SET role = ?
+                WHERE membership_id = ?
+                """,
+                (normalized_role, membership_row["membership_id"]),
+            )
+            status = "updated"
+
+        context_row = _get_user_context_row(connection, user_id=user_id)
+        if payload.set_active_store:
+            _upsert_user_context(
+                connection,
+                user_id=user_id,
+                active_store_id=store_id,
+                active_device_id=None,
+                updated_at=now,
+            )
+        elif context_row is None:
+            _upsert_user_context(
+                connection,
+                user_id=user_id,
+                active_store_id=store_id,
+                active_device_id=None,
+                updated_at=now,
+            )
+
+        membership_row = _select_active_membership_row(
+            connection,
+            user_id=user_id,
+            store_id=store_id,
+        )
+        if membership_row is None:
+            raise HTTPException(status_code=500, detail="Internal server error.")
+
+        final_context_row = _get_user_context_row(connection, user_id=user_id)
+        connection.commit()
+    except HTTPException:
+        rollback_quietly(connection)
+        raise
+    except Exception as error:
+        rollback_quietly(connection)
+        logger.exception(
+            "Unexpected failure while upserting admin membership user_id=%s store_id=%s",
+            user_id,
+            store_id,
+        )
+        raise HTTPException(status_code=500, detail="Internal server error.") from error
+
+    logger.info(
+        "Admin membership action=%s user_id=%s store_id=%s role=%s set_active_store=%s",
+        status,
+        user_id,
+        store_id,
+        membership_row["role"],
+        payload.set_active_store,
+    )
+    return AdminUpsertStoreMembershipResponse(
+        status=status,
+        membership=_membership_row_to_model(membership_row),
+        active_store_id=(
+            final_context_row["active_store_id"] if final_context_row is not None else None
+        ),
+        active_device_id=(
+            final_context_row["active_device_id"] if final_context_row is not None else None
+        ),
     )
 
 

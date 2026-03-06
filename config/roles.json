@@ -1,7 +1,67 @@
 {
   "roles": {
     "root": ["*"],
-    "operator": ["devices.list", "devices.status.read"],
-    "viewer": ["devices.status.read"]
+    "store_admin": [
+      "bot.user_context.read",
+      "bot.store.select",
+      "bot.user.unlink",
+      "stores.read",
+      "devices.list",
+      "devices.status.read",
+      "results.read.last",
+      "results.read.history",
+      "analytics.read.summary",
+      "events.read",
+      "commands.submit",
+      "commands.read",
+      "commands.device.tare",
+      "commands.device.restart",
+      "commands.device.request_scan",
+      "commands.config.write",
+      "commands.maintenance.run",
+      "invites.create",
+      "invites.revoke",
+      "users.manage",
+      "roles.manage",
+      "stores.manage",
+      "devices.manage",
+      "memberships.revoke.self"
+    ],
+    "operator": [
+      "bot.user_context.read",
+      "bot.store.select",
+      "stores.read",
+      "devices.list",
+      "devices.status.read",
+      "results.read.last",
+      "events.read",
+      "commands.submit",
+      "commands.read",
+      "commands.device.tare",
+      "commands.device.request_scan",
+      "memberships.revoke.self"
+    ],
+    "viewer": [
+      "bot.user_context.read",
+      "bot.store.select",
+      "stores.read",
+      "devices.list",
+      "devices.status.read",
+      "results.read.last",
+      "analytics.read.summary",
+      "events.read",
+      "memberships.revoke.self"
+    ],
+    "auditor": [
+      "bot.user_context.read",
+      "bot.store.select",
+      "stores.read",
+      "devices.list",
+      "devices.status.read",
+      "results.read.history",
+      "analytics.read.summary",
+      "events.read",
+      "memberships.revoke.self"
+    ]
   }
 }

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import os
 from pathlib import Path
+import sqlite3
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -64,6 +68,61 @@ def _create_bot_user(
     )
     assert ensure_response.status_code == 200
     return ensure_response.json()
+
+
+def _database_path() -> Path:
+    return Path(os.environ["DATABASE_PATH"])
+
+
+def _create_store(client: TestClient, *, display_name: str) -> dict:
+    response = client.post(
+        "/admin/v1/stores",
+        json={"display_name": display_name},
+        headers=_admin_headers(),
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+def _seed_membership_and_context(
+    *,
+    user_id: str,
+    store_id: str,
+    role: str,
+    make_active: bool = True,
+) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(_database_path()) as connection:
+        connection.execute(
+            """
+            INSERT INTO store_memberships (
+                membership_id,
+                store_id,
+                user_id,
+                role,
+                created_at,
+                revoked_at,
+                created_by_user_id,
+                note
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (str(uuid.uuid4()), store_id, user_id, role, now, None, None, None),
+        )
+        if make_active:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO user_context (
+                    user_id,
+                    active_store_id,
+                    active_device_id,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, store_id, None, now),
+            )
+        connection.commit()
 
 
 def test_admin_endpoints_require_admin_auth(client: TestClient):
@@ -296,3 +355,89 @@ def test_integration_ban_then_session_ensure_returns_is_banned_true(client: Test
     assert ensure_after_ban.status_code == 200
     assert ensure_after_ban.json()["user_id"] == user_id
     assert ensure_after_ban.json()["is_banned"] is True
+
+
+def test_banned_user_cannot_create_bot_invites(client: TestClient):
+    created = _create_bot_user(
+        client,
+        provider_user_id="telegram-id-banned-invite-create-1",
+        provider_chat_id="telegram-chat-banned-invite-create-1",
+        username="banned_invite_creator",
+    )
+    store = _create_store(client, display_name="Invite Creation Store")
+    _seed_membership_and_context(
+        user_id=created["user_id"],
+        store_id=store["store_id"],
+        role="store_admin",
+    )
+
+    ban_response = client.patch(
+        f"/admin/v1/users/{created['user_id']}",
+        json={"is_banned": True, "reason": "spam"},
+        headers=_admin_headers(),
+    )
+    assert ban_response.status_code == 200
+
+    invite_response = client.post(
+        "/bot/v1/invites/create",
+        json={
+            "provider": "telegram",
+            "provider_user_id": "telegram-id-banned-invite-create-1",
+            "role": "operator",
+        },
+        headers=_bot_headers(),
+    )
+    assert invite_response.status_code == 403
+    assert invite_response.json() == {"detail": "user_banned"}
+
+
+def test_banned_user_cannot_redeem_bot_invites(client: TestClient):
+    inviter = _create_bot_user(
+        client,
+        provider_user_id="telegram-id-banned-redeem-inviter-1",
+        provider_chat_id="telegram-chat-banned-redeem-inviter-1",
+        username="banned_redeem_inviter",
+    )
+    store = _create_store(client, display_name="Invite Redeem Store")
+    _seed_membership_and_context(
+        user_id=inviter["user_id"],
+        store_id=store["store_id"],
+        role="store_admin",
+    )
+
+    invite_response = client.post(
+        "/bot/v1/invites/create",
+        json={
+            "provider": "telegram",
+            "provider_user_id": "telegram-id-banned-redeem-inviter-1",
+            "role": "operator",
+        },
+        headers=_bot_headers(),
+    )
+    assert invite_response.status_code == 200
+    invite_code = invite_response.json()["invite_code"]
+
+    invitee = _create_bot_user(
+        client,
+        provider_user_id="telegram-id-banned-redeem-target-1",
+        provider_chat_id="telegram-chat-banned-redeem-target-1",
+        username="banned_redeem_target",
+    )
+    ban_response = client.patch(
+        f"/admin/v1/users/{invitee['user_id']}",
+        json={"is_banned": True, "reason": "policy"},
+        headers=_admin_headers(),
+    )
+    assert ban_response.status_code == 200
+
+    redeem_response = client.post(
+        "/bot/v1/invites/redeem",
+        json={
+            "provider": "telegram",
+            "provider_user_id": "telegram-id-banned-redeem-target-1",
+            "invite_code": invite_code,
+        },
+        headers=_bot_headers(),
+    )
+    assert redeem_response.status_code == 403
+    assert redeem_response.json() == {"detail": "user_banned"}

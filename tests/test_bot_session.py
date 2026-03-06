@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 import time
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -45,6 +46,91 @@ def _ensure_payload(
     if display_name is not None:
         payload["display_name"] = display_name
     return payload
+
+
+def _seed_store(database_path: Path, *, store_id: str, display_name: str, is_active: bool = True) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO stores (
+                store_id,
+                display_name,
+                name,
+                address,
+                is_active,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (store_id, display_name, display_name, None, 1 if is_active else 0, now, now),
+        )
+        connection.commit()
+
+
+def _seed_membership(
+    database_path: Path,
+    *,
+    store_id: str,
+    user_id: str,
+    role: str,
+) -> None:
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO store_memberships (
+                membership_id,
+                store_id,
+                user_id,
+                role,
+                created_at,
+                revoked_at,
+                created_by_user_id,
+                note
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                store_id,
+                user_id,
+                role,
+                datetime.now(timezone.utc).isoformat(),
+                None,
+                None,
+                None,
+            ),
+        )
+        connection.commit()
+
+
+def _set_user_context(
+    database_path: Path,
+    *,
+    user_id: str,
+    active_store_id: str | None,
+    active_device_id: str | None = None,
+) -> None:
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO user_context (
+                user_id,
+                active_store_id,
+                active_device_id,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                active_store_id,
+                active_device_id,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        connection.commit()
 
 
 def test_bot_session_ensure_requires_valid_service_token(client_and_db):
@@ -93,7 +179,9 @@ def test_bot_session_ensure_creates_user_and_identity(client_and_db):
     assert body["user_id"]
     assert body["is_banned"] is False
     assert body["is_linked"] is False
+    assert body["memberships_count"] == 0
     assert body["active_store_id"] is None
+    assert body["active_store_display_name"] is None
     assert body["active_device_id"] is None
 
     with sqlite3.connect(database_path) as connection:
@@ -230,3 +318,35 @@ def test_bot_session_ensure_returns_banned_user_with_200(client_and_db):
     )
     assert banned_response.status_code == 200
     assert banned_response.json()["is_banned"] is True
+
+
+def test_bot_session_ensure_returns_linked_state_and_active_store_details(client_and_db):
+    client, database_path = client_and_db
+    payload = _ensure_payload(provider_user_id="telegram-user-linked-1")
+
+    first = client.post("/bot/v1/session/ensure", json=payload, headers=_bot_headers())
+    assert first.status_code == 200
+    user_id = first.json()["user_id"]
+
+    _seed_store(database_path, store_id="store-linked-1", display_name="Linked Store")
+    _seed_membership(
+        database_path,
+        store_id="store-linked-1",
+        user_id=user_id,
+        role="viewer",
+    )
+    _set_user_context(
+        database_path,
+        user_id=user_id,
+        active_store_id="store-linked-1",
+    )
+
+    second = client.post("/bot/v1/session/ensure", json=payload, headers=_bot_headers())
+    assert second.status_code == 200
+    body = second.json()
+    assert body["user_id"] == user_id
+    assert body["is_linked"] is True
+    assert body["memberships_count"] == 1
+    assert body["active_store_id"] == "store-linked-1"
+    assert body["active_store_display_name"] == "Linked Store"
+    assert body["active_device_id"] is None

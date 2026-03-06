@@ -154,6 +154,27 @@ def _migrate_stores_columns(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_users_columns(connection: sqlite3.Connection) -> None:
+    columns = _get_table_columns(connection, "users")
+    if not columns:
+        return
+
+    if "ban_reason" not in columns:
+        connection.execute("ALTER TABLE users ADD COLUMN ban_reason TEXT NULL")
+    if "updated_at" not in columns:
+        connection.execute("ALTER TABLE users ADD COLUMN updated_at TEXT NULL")
+
+    refreshed_columns = _get_table_columns(connection, "users")
+    if "updated_at" in refreshed_columns:
+        connection.execute(
+            """
+            UPDATE users
+            SET updated_at = COALESCE(updated_at, last_seen_at, created_at)
+            WHERE updated_at IS NULL
+            """
+        )
+
+
 def init_db(database_path: str) -> None:
     connection = open_connection(database_path)
     try:
@@ -224,7 +245,9 @@ def init_db(database_path: str) -> None:
             CREATE TABLE IF NOT EXISTS users (
                 user_id TEXT PRIMARY KEY,
                 is_banned INTEGER NOT NULL DEFAULT 0,
+                ban_reason TEXT NULL,
                 created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL
             );
 
@@ -251,11 +274,61 @@ def init_db(database_path: str) -> None:
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS store_memberships (
+                membership_id TEXT PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                revoked_at TEXT NULL,
+                created_by_user_id TEXT NULL,
+                note TEXT NULL,
+                FOREIGN KEY(store_id) REFERENCES stores(store_id),
+                FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY(created_by_user_id) REFERENCES users(user_id) ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_store_memberships_user_id
+            ON store_memberships(user_id);
+
+            CREATE INDEX IF NOT EXISTS idx_store_memberships_store_id
+            ON store_memberships(store_id);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_store_memberships_active_unique
+            ON store_memberships(store_id, user_id)
+            WHERE revoked_at IS NULL;
+
+            CREATE TABLE IF NOT EXISTS staff_invites (
+                invite_id TEXT PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                code_hash TEXT NOT NULL,
+                role TEXT NOT NULL,
+                created_by_user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                max_uses INTEGER NOT NULL,
+                used_count INTEGER NOT NULL DEFAULT 0,
+                revoked_at TEXT NULL,
+                note TEXT NULL,
+                FOREIGN KEY(store_id) REFERENCES stores(store_id),
+                FOREIGN KEY(created_by_user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_staff_invites_code_hash
+            ON staff_invites(code_hash);
+
+            CREATE INDEX IF NOT EXISTS idx_staff_invites_store_id
+            ON staff_invites(store_id);
+
+            CREATE INDEX IF NOT EXISTS idx_staff_invites_created_by
+            ON staff_invites(created_by_user_id);
             """
         )
         _migrate_scan_results_scan_id_to_image_id(connection)
         _migrate_devices_presence_columns(connection)
         _migrate_stores_columns(connection)
+        _migrate_users_columns(connection)
         connection.commit()
     finally:
         connection.close()

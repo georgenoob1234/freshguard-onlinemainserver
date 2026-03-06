@@ -74,6 +74,10 @@ def get_role_permissions(role_name: str) -> set[str]:
     return set(role_permissions)
 
 
+def is_known_role(role_name: str) -> bool:
+    return role_name in load_roles_config()
+
+
 def is_permission_granted(role_name: str, permission: str) -> bool:
     role_permissions = get_role_permissions(role_name)
     return "*" in role_permissions or permission in role_permissions

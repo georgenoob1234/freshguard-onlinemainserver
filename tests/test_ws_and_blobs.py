@@ -173,6 +173,71 @@ def test_send_command_returns_response_when_test_connector_replies(client_and_pa
     assert body["data"] == {"pong": True}
 
 
+def test_send_tare_command_with_mode_is_forwarded_to_connector(client_and_paths):
+    client, _, _ = client_and_paths
+    device_id, device_token = _register_device(client)
+    admin_result: dict[str, object] = {}
+
+    def _dispatch_admin_command() -> None:
+        response = client.post(
+            f"/admin/v1/devices/{device_id}/commands",
+            headers={"X-ADMIN-KEY": "admin-test-key"},
+            json={"request_type": "tare", "params": {"mode": " SET "}},
+        )
+        admin_result["status_code"] = response.status_code
+        admin_result["body"] = response.json()
+
+    with client.websocket_connect(
+        "/connector/v1/ws",
+        headers={"Authorization": f"Bearer {device_token}"},
+    ) as websocket:
+        worker = threading.Thread(target=_dispatch_admin_command, daemon=True)
+        worker.start()
+
+        outbound_request = websocket.receive_json()
+        assert outbound_request["type"] == "request"
+        assert outbound_request["device_id"] == device_id
+        assert outbound_request["payload"]["request_type"] == "tare"
+        assert outbound_request["payload"]["params"] == {"mode": "set"}
+        request_id = outbound_request["payload"]["request_id"]
+
+        websocket.send_json(
+            {
+                "type": "response",
+                "ts": "2026-03-01T12:01:00Z",
+                "message_id": str(uuid.uuid4()),
+                "device_id": device_id,
+                "payload": {
+                    "request_id": request_id,
+                    "status": "ok",
+                    "data": {"accepted": True},
+                    "error": None,
+                },
+            }
+        )
+        worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert admin_result["status_code"] == 200
+    body = admin_result["body"]
+    assert isinstance(body, dict)
+    assert body["status"] == "ok"
+    assert body["data"] == {"accepted": True}
+
+
+def test_send_tare_command_rejects_invalid_mode(client_and_paths):
+    client, _, _ = client_and_paths
+
+    response = client.post(
+        "/admin/v1/devices/device-does-not-matter/commands",
+        headers={"X-ADMIN-KEY": "admin-test-key"},
+        json={"request_type": "tare", "params": {"mode": "hold"}},
+    )
+
+    assert response.status_code == 422
+    assert "tare params.mode" in response.text
+
+
 def test_blob_upload_stores_blob_and_returns_blob_id(client_and_paths):
     client, database_path, blob_storage_path = client_and_paths
     device_id, device_token = _register_device(client)
