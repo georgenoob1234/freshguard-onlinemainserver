@@ -41,6 +41,36 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
+## Docker
+
+Copy `.env.example` to `.env`, set `ADMIN_KEY` and `SECRET_SALT` (and `TGBOT_SERVICE_TOKEN` for production), then:
+
+**Build:**
+```bash
+docker build -t onlinemainserver .
+```
+
+**Run (standalone):**
+```bash
+docker run -d --name oms -p 8080:8080 --env-file .env -v oms_data:/app/data onlinemainserver
+```
+
+**Run with Docker Compose:**
+```bash
+docker compose up -d
+```
+
+The app listens on port 8080. Data (SQLite DB and blobs) is persisted in the `oms_data` volume. Migrations run automatically on startup via `init_db`.
+
+**Post-startup setup:** Seed the stores table before creating enroll tokens (see "Seed stores table" below). With Docker, use the admin API:
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/admin/v1/stores" \
+  -H "Content-Type: application/json" \
+  -H "X-ADMIN-KEY: ${ADMIN_KEY}" \
+  -d '{"display_name": "Store 1", "is_active": true}'
+```
+
 ## Bot service endpoints
 
 All `/bot/v1/*` endpoints require:
