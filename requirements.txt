@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 pytest
 httpx
 python-multipart
