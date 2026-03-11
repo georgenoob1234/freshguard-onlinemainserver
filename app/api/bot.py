@@ -3,20 +3,24 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 import logging
+from pathlib import Path
 import secrets
 import sqlite3
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 
 from app.auth import BotService, resolve_authenticated_bot_service
 from app.config import get_settings
-from app.db import get_db, rollback_quietly
+from app.db import get_db, open_connection, rollback_quietly
 from app.device_status import compute_online, parse_db_utc_datetime, serialize_utc_datetime
 from app.models import (
     BotDefectSummary,
     BotDeviceStatusResponse,
     BotDeviceSummary,
+    BotDeviceCommandRequest,
+    BotDeviceCommandResponse,
     BotHealthResponse,
     BotInviteCreateRequest,
     BotInviteCreateResponse,
@@ -24,6 +28,7 @@ from app.models import (
     BotInviteRedeemResponse,
     BotInviteRedeemStore,
     BotLatestResultResponse,
+    BotCommandStatusResponse,
     BotRevokeSelfMembershipRequest,
     BotRevokeSelfMembershipResponse,
     BotSessionEnsureRequest,
@@ -36,7 +41,7 @@ from app.models import (
     BotStoreSummary,
     BotStoresResponse,
 )
-from app.realtime import connection_manager
+from app.realtime import CommandTimeoutError, connection_manager, send_command
 from app.roles import is_known_role, is_permission_granted
 from app.security import hash_token
 
@@ -545,6 +550,32 @@ def _normalize_invite_role(role_name: str) -> str:
     return normalized
 
 
+def _normalize_request_type(request_type: str) -> str:
+    normalized = request_type.strip().lower()
+    if normalized not in {"camera.capture", "tare"}:
+        raise HTTPException(status_code=400, detail="unsupported_request_type")
+    return normalized
+
+
+def _normalize_command_status(status: str | None) -> str:
+    normalized = (status or "").strip().lower()
+    if normalized in {"ok", "success", "succeeded"}:
+        return "succeeded"
+    if normalized in {"error", "failed", "failure"}:
+        return "failed"
+    return "failed"
+
+
+def _require_request_permissions(role_name: str, request_type: str) -> None:
+    if request_type == "camera.capture":
+        _require_role_permissions(role_name, "commands.submit", "commands.device.request_scan")
+        return
+    if request_type == "tare":
+        _require_role_permissions(role_name, "commands.submit", "commands.device.tare")
+        return
+    raise HTTPException(status_code=400, detail="unsupported_request_type")
+
+
 def _generate_unique_invite_code(
     connection: sqlite3.Connection,
     *,
@@ -572,6 +603,58 @@ def _generate_unique_invite_code(
             return invite_code, code_hash
 
     raise HTTPException(status_code=500, detail="invite_code_generation_failed")
+
+
+def _select_command_row(
+    connection: sqlite3.Connection,
+    *,
+    command_id: str,
+) -> sqlite3.Row | None:
+    return connection.execute(
+        """
+        SELECT
+            command_id,
+            request_id,
+            device_id,
+            store_id,
+            user_id,
+            request_type,
+            params_json,
+            status,
+            result_json,
+            error_code,
+            blob_id,
+            created_at,
+            sent_at,
+            completed_at
+        FROM device_commands
+        WHERE command_id = ?
+        """,
+        (command_id,),
+    ).fetchone()
+
+
+def _command_row_to_status_response(row: sqlite3.Row) -> BotCommandStatusResponse:
+    result_payload: object | None
+    if row["result_json"] is None:
+        result_payload = None
+    else:
+        try:
+            result_payload = json.loads(row["result_json"])
+        except json.JSONDecodeError:
+            result_payload = None
+
+    return BotCommandStatusResponse(
+        command_id=row["command_id"],
+        device_id=row["device_id"],
+        store_id=row["store_id"],
+        request_type=row["request_type"],
+        status=row["status"],
+        result=result_payload,
+        error_code=row["error_code"],
+        created_at=row["created_at"],
+        completed_at=row["completed_at"],
+    )
 
 
 def _select_invite_row_by_code_hash(
@@ -1275,6 +1358,294 @@ def get_bot_device_last_result(
     if result_row is None:
         raise HTTPException(status_code=404, detail="result_not_found")
     return _result_row_to_model(result_row)
+
+
+@router.post("/devices/{device_id}/commands", response_model=BotDeviceCommandResponse)
+async def submit_bot_device_command(
+    device_id: str,
+    payload: BotDeviceCommandRequest,
+    _: BotService = Depends(resolve_authenticated_bot_service),
+) -> BotDeviceCommandResponse:
+    settings = get_settings()
+    connection = open_connection(settings.database_path)
+    try:
+        normalized_provider = _require_supported_provider(payload.provider)
+        user_row = _require_known_user(
+            connection,
+            provider=normalized_provider,
+            provider_user_id=payload.provider_user_id,
+        )
+        _require_not_banned(user_row)
+
+        membership_row = _require_active_store_membership_row(
+            connection,
+            user_id=user_row["user_id"],
+        )
+        device_row = _require_store_device_row(
+            connection,
+            store_id=membership_row["store_id"],
+            device_id=device_id,
+            detail="device_not_in_active_store",
+        )
+
+        request_type = _normalize_request_type(payload.request_type)
+        _require_request_permissions(membership_row["role"], request_type)
+
+        now = datetime.now(timezone.utc).isoformat()
+        command_id = str(uuid.uuid4())
+        request_id = str(uuid.uuid4())
+        params_payload = json.dumps(payload.params, separators=(",", ":"), sort_keys=True)
+
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO device_commands (
+                    command_id,
+                    request_id,
+                    device_id,
+                    store_id,
+                    user_id,
+                    request_type,
+                    params_json,
+                    status,
+                    result_json,
+                    error_code,
+                    blob_id,
+                    created_at,
+                    sent_at,
+                    completed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    command_id,
+                    request_id,
+                    device_id,
+                    membership_row["store_id"],
+                    user_row["user_id"],
+                    request_type,
+                    params_payload,
+                    "queued",
+                    None,
+                    None,
+                    None,
+                    now,
+                    None,
+                    None,
+                ),
+            )
+            connection.execute("COMMIT")
+        except HTTPException:
+            rollback_quietly(connection)
+            raise
+        except Exception as error:
+            rollback_quietly(connection)
+            logger.exception("Unexpected failure while storing bot command.")
+            raise HTTPException(status_code=500, detail="Internal server error.") from error
+
+        if payload.wait_timeout_ms is not None:
+            timeout_s = payload.wait_timeout_ms / 1000.0
+        else:
+            timeout_s = 12.0 if request_type == "camera.capture" else 6.0
+        timeout_s = max(0.0, timeout_s)
+
+        try:
+            connection.execute(
+                "UPDATE device_commands SET status = ?, sent_at = ? WHERE command_id = ?",
+                ("sent", datetime.now(timezone.utc).isoformat(), command_id),
+            )
+            connection.commit()
+        except Exception as error:
+            logger.exception("Failed to mark bot command sent.")
+            raise HTTPException(status_code=500, detail="Internal server error.") from error
+
+        try:
+            response_payload = await send_command(
+                device_id=device_row["device_id"],
+                request_type=request_type,
+                params=payload.params,
+                timeout_s=timeout_s,
+            )
+        except CommandTimeoutError:
+            connection.execute(
+                "UPDATE device_commands SET status = ? WHERE command_id = ?",
+                ("running", command_id),
+            )
+            connection.commit()
+            return BotDeviceCommandResponse(
+                command_id=command_id,
+                device_id=device_row["device_id"],
+                store_id=membership_row["store_id"],
+                request_type=request_type,
+                status="running",
+                result=None,
+                error_code=None,
+                created_at=now,
+                completed_at=None,
+            )
+        except HTTPException:
+            connection.execute(
+                """
+                UPDATE device_commands
+                SET status = ?, error_code = ?, completed_at = ?
+                WHERE command_id = ?
+                """,
+                (
+                    "failed",
+                    "connector_offline",
+                    datetime.now(timezone.utc).isoformat(),
+                    command_id,
+                ),
+            )
+            connection.commit()
+            raise HTTPException(status_code=409, detail="connector_offline")
+
+        response_status = _normalize_command_status(
+            response_payload.get("status") if isinstance(response_payload, dict) else None
+        )
+        response_data = (
+            response_payload.get("data") if isinstance(response_payload, dict) else None
+        )
+        response_error = (
+            response_payload.get("error") if isinstance(response_payload, dict) else None
+        )
+        blob_id = None
+        if isinstance(response_data, dict):
+            blob_candidate = response_data.get("blob_id")
+            if isinstance(blob_candidate, str) and blob_candidate:
+                blob_id = blob_candidate
+
+        result_json = json.dumps(response_data, separators=(",", ":"), sort_keys=True)
+        completed_at = datetime.now(timezone.utc).isoformat()
+        error_code = None
+        if response_status != "succeeded":
+            error_code = "command_failed"
+            if isinstance(response_error, str) and response_error.strip():
+                error_code = response_error.strip()
+
+        connection.execute(
+            """
+            UPDATE device_commands
+            SET status = ?, result_json = ?, error_code = ?, blob_id = ?, completed_at = ?
+            WHERE command_id = ?
+            """,
+            (
+                response_status,
+                result_json,
+                error_code,
+                blob_id,
+                completed_at,
+                command_id,
+            ),
+        )
+        connection.commit()
+
+        return BotDeviceCommandResponse(
+            command_id=command_id,
+            device_id=device_row["device_id"],
+            store_id=membership_row["store_id"],
+            request_type=request_type,
+            status=response_status,
+            result=response_data,
+            error_code=error_code,
+            created_at=now,
+            completed_at=completed_at,
+        )
+    finally:
+        connection.close()
+
+
+@router.get("/commands/{command_id}", response_model=BotCommandStatusResponse)
+def get_bot_command_status(
+    command_id: str,
+    provider: str = Query(..., min_length=1),
+    provider_user_id: str = Query(..., min_length=1),
+    _: BotService = Depends(resolve_authenticated_bot_service),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> BotCommandStatusResponse:
+    normalized_provider = _require_supported_provider(provider)
+    user_row = _require_known_user(
+        connection,
+        provider=normalized_provider,
+        provider_user_id=provider_user_id,
+    )
+    _require_not_banned(user_row)
+
+    command_row = _select_command_row(connection, command_id=command_id)
+    if command_row is None:
+        raise HTTPException(status_code=404, detail="command_not_found")
+    if command_row["user_id"] != user_row["user_id"]:
+        raise HTTPException(status_code=403, detail="permission_denied")
+
+    membership_row = _require_membership_row(
+        connection,
+        user_id=user_row["user_id"],
+        store_id=command_row["store_id"],
+        detail="command_not_found",
+    )
+    _ = membership_row
+
+    return _command_row_to_status_response(command_row)
+
+
+@router.get("/commands/{command_id}/photo")
+def get_bot_command_photo(
+    command_id: str,
+    provider: str = Query(..., min_length=1),
+    provider_user_id: str = Query(..., min_length=1),
+    _: BotService = Depends(resolve_authenticated_bot_service),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> FileResponse:
+    normalized_provider = _require_supported_provider(provider)
+    user_row = _require_known_user(
+        connection,
+        provider=normalized_provider,
+        provider_user_id=provider_user_id,
+    )
+    _require_not_banned(user_row)
+
+    command_row = _select_command_row(connection, command_id=command_id)
+    if command_row is None:
+        raise HTTPException(status_code=404, detail="command_not_found")
+    if command_row["user_id"] != user_row["user_id"]:
+        raise HTTPException(status_code=403, detail="permission_denied")
+
+    _require_membership_row(
+        connection,
+        user_id=user_row["user_id"],
+        store_id=command_row["store_id"],
+        detail="command_not_found",
+    )
+
+    if command_row["request_type"] != "camera.capture":
+        raise HTTPException(status_code=400, detail="command_has_no_photo")
+    if command_row["status"] != "succeeded":
+        raise HTTPException(status_code=409, detail="photo_not_ready")
+    blob_id = command_row["blob_id"]
+    if not blob_id:
+        raise HTTPException(status_code=404, detail="photo_not_found")
+
+    blob_row = connection.execute(
+        """
+        SELECT path, content_type
+        FROM blobs
+        WHERE blob_id = ?
+        """,
+        (blob_id,),
+    ).fetchone()
+    if blob_row is None:
+        raise HTTPException(status_code=404, detail="photo_not_found")
+
+    blob_path = Path(blob_row["path"])
+    if not blob_path.exists():
+        raise HTTPException(status_code=404, detail="photo_not_found")
+
+    return FileResponse(
+        path=blob_path,
+        media_type=blob_row["content_type"],
+        filename=blob_path.name,
+    )
 
 
 @router.post("/memberships/revoke_self", response_model=BotRevokeSelfMembershipResponse)

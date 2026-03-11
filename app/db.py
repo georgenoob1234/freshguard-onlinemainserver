@@ -7,6 +7,9 @@ from typing import Iterator
 from app.config import get_settings
 
 
+logger = __import__("logging").getLogger(__name__)
+
+
 def _ensure_database_directory(database_path: str) -> None:
     db_file = Path(database_path)
     if db_file.parent and str(db_file.parent) not in {"", "."}:
@@ -242,6 +245,27 @@ def init_db(database_path: str) -> None:
                 FOREIGN KEY(device_id) REFERENCES devices(device_id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS device_commands (
+                command_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL UNIQUE,
+                device_id TEXT NOT NULL,
+                store_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                request_type TEXT NOT NULL,
+                params_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                result_json TEXT NULL,
+                error_code TEXT NULL,
+                blob_id TEXT NULL,
+                created_at TEXT NOT NULL,
+                sent_at TEXT NULL,
+                completed_at TEXT NULL,
+                FOREIGN KEY(device_id) REFERENCES devices(device_id) ON DELETE CASCADE,
+                FOREIGN KEY(store_id) REFERENCES stores(store_id),
+                FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY(blob_id) REFERENCES blobs(blob_id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS users (
                 user_id TEXT PRIMARY KEY,
                 is_banned INTEGER NOT NULL DEFAULT 0,
@@ -298,6 +322,18 @@ def init_db(database_path: str) -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_store_memberships_active_unique
             ON store_memberships(store_id, user_id)
             WHERE revoked_at IS NULL;
+
+            CREATE INDEX IF NOT EXISTS idx_device_commands_user_id
+            ON device_commands(user_id);
+
+            CREATE INDEX IF NOT EXISTS idx_device_commands_device_id
+            ON device_commands(device_id);
+
+            CREATE INDEX IF NOT EXISTS idx_device_commands_store_id
+            ON device_commands(store_id);
+
+            CREATE INDEX IF NOT EXISTS idx_device_commands_created_at
+            ON device_commands(created_at);
 
             CREATE TABLE IF NOT EXISTS staff_invites (
                 invite_id TEXT PRIMARY KEY,

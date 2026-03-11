@@ -488,3 +488,71 @@ class BlobUploadResponse(StrictModel):
     size_bytes: int
     sha256: str
     content_type: str
+
+
+BotCommandRequestType = Literal[
+    "camera.capture",
+    "tare",
+]
+
+
+BotCommandStatus = Literal[
+    "queued",
+    "sent",
+    "running",
+    "succeeded",
+    "failed",
+    "timeout",
+]
+
+
+class BotDeviceCommandRequest(BotActorRequest):
+    request_type: BotCommandRequestType
+    params: dict[str, Any] = Field(default_factory=dict)
+    wait_timeout_ms: Optional[int] = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_tare_mode(self) -> "BotDeviceCommandRequest":
+        if self.request_type != "tare":
+            return self
+
+        mode = self.params.get("mode")
+        if not isinstance(mode, str):
+            raise PydanticCustomError(
+                "tare_mode",
+                "tare params.mode must be 'set' or 'reset'",
+            )
+
+        normalized_mode = mode.strip().lower()
+        if normalized_mode not in {"set", "reset"}:
+            raise PydanticCustomError(
+                "tare_mode",
+                "tare params.mode must be 'set' or 'reset'",
+            )
+
+        self.params["mode"] = normalized_mode
+        return self
+
+
+class BotDeviceCommandResponse(StrictModel):
+    command_id: str
+    device_id: str
+    store_id: str
+    request_type: BotCommandRequestType
+    status: BotCommandStatus
+    result: Any = None
+    error_code: Optional[str] = None
+    created_at: str
+    completed_at: Optional[str] = None
+
+
+class BotCommandStatusResponse(StrictModel):
+    command_id: str
+    device_id: str
+    store_id: str
+    request_type: BotCommandRequestType
+    status: BotCommandStatus
+    result: Any = None
+    error_code: Optional[str] = None
+    created_at: str
+    completed_at: Optional[str] = None
