@@ -357,12 +357,20 @@ class BotSetActiveDeviceResponse(StrictModel):
     active_device_id: str
 
 
+class BotDeviceActionVisibility(StrictModel):
+    show_photo: bool
+    show_tare: bool
+    show_tare_set: bool
+    show_tare_reset: bool
+
+
 class BotDeviceStatusResponse(StrictModel):
     device_id: str
     display_name: str
     connected: bool
     last_seen_at: Optional[str] = None
     online: bool
+    actions: BotDeviceActionVisibility
 
 
 class BotDefectSummary(StrictModel):

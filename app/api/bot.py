@@ -177,6 +177,8 @@ def _build_bot_device_status_response(
     *,
     now_utc: datetime,
     threshold_seconds: int,
+    can_request_photo: bool,
+    can_tare: bool,
 ) -> BotDeviceStatusResponse:
     last_seen_at = parse_db_utc_datetime(row["last_seen_at"])
     return BotDeviceStatusResponse(
@@ -189,6 +191,12 @@ def _build_bot_device_status_response(
             now_utc=now_utc,
             threshold_seconds=threshold_seconds,
         ),
+        actions={
+            "show_photo": can_request_photo,
+            "show_tare": can_tare,
+            "show_tare_set": can_tare,
+            "show_tare_reset": can_tare,
+        },
     )
 
 
@@ -1282,11 +1290,24 @@ def get_bot_device_status(
         detail="device_not_in_active_store",
     )
 
+    can_request_photo = _role_has_all_permissions(
+        membership_row["role"],
+        "commands.submit",
+        "commands.device.request_scan",
+    )
+    can_tare = _role_has_all_permissions(
+        membership_row["role"],
+        "commands.submit",
+        "commands.device.tare",
+    )
+
     settings = get_settings()
     return _build_bot_device_status_response(
         device_row,
         now_utc=datetime.now(timezone.utc),
         threshold_seconds=settings.online_threshold_seconds,
+        can_request_photo=can_request_photo,
+        can_tare=can_tare,
     )
 
 
