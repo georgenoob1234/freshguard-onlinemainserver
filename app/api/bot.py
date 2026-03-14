@@ -31,6 +31,8 @@ from app.models import (
     BotCommandStatusResponse,
     BotRevokeSelfMembershipRequest,
     BotRevokeSelfMembershipResponse,
+    BotNotificationPreferencesResponse,
+    BotUpdateNotificationPreferencesRequest,
     BotSessionEnsureRequest,
     BotSessionEnsureResponse,
     BotSetActiveDeviceRequest,
@@ -40,6 +42,16 @@ from app.models import (
     BotStoreDevicesResponse,
     BotStoreSummary,
     BotStoresResponse,
+)
+from app.notifications import (
+    EVENT_DEFECT_DETECTED,
+    build_notification_preference_view,
+    load_notification_preferences,
+    upsert_notification_preferences,
+)
+from app.notification_images import (
+    get_or_create_annotated_image,
+    load_result_image_context,
 )
 from app.realtime import CommandTimeoutError, connection_manager, send_command
 from app.roles import is_known_role, is_permission_granted
@@ -1262,6 +1274,103 @@ def set_active_device(
     )
 
 
+@router.get(
+    "/notifications/preferences",
+    response_model=BotNotificationPreferencesResponse,
+)
+def get_bot_notification_preferences(
+    provider: str = Query(..., min_length=1),
+    provider_user_id: str = Query(..., min_length=1),
+    _: BotService = Depends(resolve_authenticated_bot_service),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> BotNotificationPreferencesResponse:
+    normalized_provider = _require_supported_provider(provider)
+    user_row = _require_known_user(
+        connection,
+        provider=normalized_provider,
+        provider_user_id=provider_user_id,
+    )
+    _require_not_banned(user_row)
+
+    membership_row = _require_active_store_membership_row(
+        connection,
+        user_id=user_row["user_id"],
+    )
+    preferences = load_notification_preferences(
+        connection,
+        user_id=user_row["user_id"],
+        store_id=membership_row["store_id"],
+    )
+    view = build_notification_preference_view(
+        user_id=user_row["user_id"],
+        store_id=membership_row["store_id"],
+        role=membership_row["role"],
+        preferences=preferences,
+    )
+    return BotNotificationPreferencesResponse(
+        store_id=view.store_id,
+        notifications_enabled=view.preferences.notifications_enabled,
+        device_status_enabled=view.preferences.device_status_enabled,
+        defect_detected_enabled=view.preferences.defect_detected_enabled,
+        can_access_notifications=view.can_access_notifications,
+        can_access_device_status=view.can_access_device_status,
+        can_access_defect_detected=view.can_access_defect_detected,
+    )
+
+
+@router.put(
+    "/notifications/preferences",
+    response_model=BotNotificationPreferencesResponse,
+)
+def update_bot_notification_preferences(
+    payload: BotUpdateNotificationPreferencesRequest,
+    _: BotService = Depends(resolve_authenticated_bot_service),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> BotNotificationPreferencesResponse:
+    normalized_provider = _require_supported_provider(payload.provider)
+    user_row = _require_known_user(
+        connection,
+        provider=normalized_provider,
+        provider_user_id=payload.provider_user_id,
+    )
+    _require_not_banned(user_row)
+    membership_row = _require_active_store_membership_row(
+        connection,
+        user_id=user_row["user_id"],
+    )
+
+    updated_preferences = upsert_notification_preferences(
+        connection,
+        user_id=user_row["user_id"],
+        store_id=membership_row["store_id"],
+        notifications_enabled=payload.notifications_enabled,
+        device_status_enabled=payload.device_status_enabled,
+        defect_detected_enabled=payload.defect_detected_enabled,
+    )
+    connection.commit()
+
+    view = build_notification_preference_view(
+        user_id=user_row["user_id"],
+        store_id=membership_row["store_id"],
+        role=membership_row["role"],
+        preferences=updated_preferences,
+    )
+    logger.info(
+        "Bot notification preferences updated user_id=%s store_id=%s",
+        view.user_id,
+        view.store_id,
+    )
+    return BotNotificationPreferencesResponse(
+        store_id=view.store_id,
+        notifications_enabled=view.preferences.notifications_enabled,
+        device_status_enabled=view.preferences.device_status_enabled,
+        defect_detected_enabled=view.preferences.defect_detected_enabled,
+        can_access_notifications=view.can_access_notifications,
+        can_access_device_status=view.can_access_device_status,
+        can_access_defect_detected=view.can_access_defect_detected,
+    )
+
+
 @router.get("/devices/{device_id}/status", response_model=BotDeviceStatusResponse)
 def get_bot_device_status(
     device_id: str,
@@ -1666,6 +1775,78 @@ def get_bot_command_photo(
         path=blob_path,
         media_type=blob_row["content_type"],
         filename=blob_path.name,
+    )
+
+
+@router.get("/notifications/results/{result_id}/image")
+async def get_bot_notification_result_image(
+    result_id: str,
+    provider: str = Query(..., min_length=1),
+    provider_user_id: str = Query(..., min_length=1),
+    _: BotService = Depends(resolve_authenticated_bot_service),
+) -> FileResponse:
+    settings = get_settings()
+    normalized_provider = _require_supported_provider(provider)
+    normalized_provider_user_id = provider_user_id.strip()
+    connection = open_connection(settings.database_path)
+    try:
+        user_row = _require_known_user(
+            connection,
+            provider=normalized_provider,
+            provider_user_id=provider_user_id,
+        )
+        _require_not_banned(user_row)
+
+        result_context = load_result_image_context(connection, result_id=result_id)
+        if result_context is None:
+            raise HTTPException(status_code=404, detail="result_not_found")
+
+        membership_row = _require_membership_row(
+            connection,
+            user_id=user_row["user_id"],
+            store_id=result_context.store_id,
+            detail="result_not_found",
+        )
+        _require_role_permissions(
+            membership_row["role"],
+            "notifications.access",
+            "notifications.defect_detected",
+        )
+
+        delivery_row = connection.execute(
+            """
+            SELECT notification_deliveries.notification_delivery_id
+            FROM notification_events
+            JOIN notification_deliveries
+              ON notification_deliveries.notification_event_id = notification_events.notification_event_id
+            WHERE notification_events.event_type = ?
+              AND notification_events.result_id = ?
+              AND notification_deliveries.provider_user_id = ?
+            ORDER BY notification_events.created_at DESC
+            LIMIT 1
+            """,
+            (
+                EVENT_DEFECT_DETECTED,
+                result_id,
+                normalized_provider_user_id,
+            ),
+        ).fetchone()
+        if delivery_row is None:
+            raise HTTPException(status_code=403, detail="image_access_denied")
+    finally:
+        connection.close()
+
+    image_result = await get_or_create_annotated_image(
+        database_path=settings.database_path,
+        blob_storage_dir=settings.blob_storage_dir,
+        result_id=result_id,
+        cache_ttl_seconds=settings.annotated_image_cache_ttl_seconds,
+        request_timeout_seconds=settings.command_default_timeout_seconds,
+    )
+    return FileResponse(
+        path=image_result.path,
+        media_type=image_result.content_type,
+        filename=image_result.path.name,
     )
 
 

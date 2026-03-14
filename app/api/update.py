@@ -11,8 +11,10 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.auth import Device, resolve_authenticated_device
+from app.config import get_settings
 from app.db import get_db, rollback_quietly
 from app.models import UpdateEnvelopeRequest, UpdateResponse
+from app.notifications import create_defect_notifications_from_scan_result
 
 
 logger = logging.getLogger(__name__)
@@ -26,6 +28,7 @@ def ingest_update(
     connection: sqlite3.Connection = Depends(get_db),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> UpdateResponse | JSONResponse:
+    settings = get_settings()
     try:
         envelope = UpdateEnvelopeRequest.model_validate(raw_payload)
     except ValidationError as error:
@@ -53,6 +56,7 @@ def ingest_update(
     sent_at = envelope.sent_at.isoformat() if envelope.sent_at is not None else None
     final_image_id = envelope.image_id
 
+    defect_events_created = 0
     try:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
@@ -82,6 +86,28 @@ def ingest_update(
         inserted = connection.execute("SELECT changes() AS row_count").fetchone()[
             "row_count"
         ] == 1
+        result_row = connection.execute(
+            """
+            SELECT id
+            FROM scan_results
+            WHERE device_id = ? AND image_id = ?
+            """,
+            (device.device_id, final_image_id),
+        ).fetchone()
+        if (
+            inserted
+            and result_row is not None
+            and settings.notifications_enabled
+        ):
+            occurred_at = sent_at or received_at
+            defect_events_created = create_defect_notifications_from_scan_result(
+                connection,
+                device_id=device.device_id,
+                result_id=str(result_row["id"]),
+                occurred_at=occurred_at,
+                scan_result_payload=envelope.scan_result.model_dump(),
+                dedup_seconds=settings.defect_notification_dedup_seconds,
+            )
         connection.execute("COMMIT")
     except Exception:
         rollback_quietly(connection)
@@ -95,6 +121,13 @@ def ingest_update(
         final_image_id,
         duplicate,
     )
+    if defect_events_created > 0:
+        logger.info(
+            "Defect notification events created device_id=%s image_id=%s count=%s",
+            device.device_id,
+            final_image_id,
+            defect_events_created,
+        )
     if duplicate:
         return JSONResponse(
             status_code=409,

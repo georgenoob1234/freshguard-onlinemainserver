@@ -112,3 +112,5 @@ def test_default_roles_config_includes_milestone_2_permissions(monkeypatch: pyte
     assert is_permission_granted("operator", "memberships.revoke.self") is True
     assert is_permission_granted("viewer", "bot.user_context.read") is True
     assert is_permission_granted("auditor", "results.read.history") is True
+    assert is_permission_granted("operator", "notifications.access") is True
+    assert is_permission_granted("operator", "notifications.defect_detected") is True

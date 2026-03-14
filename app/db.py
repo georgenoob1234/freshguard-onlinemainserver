@@ -313,6 +313,62 @@ def init_db(database_path: str) -> None:
                 FOREIGN KEY(created_by_user_id) REFERENCES users(user_id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS notification_events (
+                notification_event_id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                store_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                result_id TEXT NULL,
+                fruit_name TEXT NULL,
+                defect_type TEXT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(store_id) REFERENCES stores(store_id),
+                FOREIGN KEY(device_id) REFERENCES devices(device_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS notification_deliveries (
+                notification_delivery_id TEXT PRIMARY KEY,
+                notification_event_id TEXT NOT NULL,
+                provider_user_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                failure_reason TEXT NULL,
+                last_attempt_at TEXT NULL,
+                sent_at TEXT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(notification_event_id) REFERENCES notification_events(notification_event_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS notification_preferences (
+                user_id TEXT NOT NULL,
+                store_id TEXT NOT NULL,
+                notifications_enabled INTEGER NOT NULL DEFAULT 1,
+                device_status_enabled INTEGER NOT NULL DEFAULT 1,
+                defect_detected_enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, store_id),
+                FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY(store_id) REFERENCES stores(store_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS annotated_image_cache (
+                result_id TEXT PRIMARY KEY,
+                blob_id TEXT NOT NULL,
+                cached_until TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(blob_id) REFERENCES blobs(blob_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS device_notification_state (
+                device_id TEXT PRIMARY KEY,
+                last_known_online INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(device_id) REFERENCES devices(device_id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_store_memberships_user_id
             ON store_memberships(user_id);
 
@@ -334,6 +390,27 @@ def init_db(database_path: str) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_device_commands_created_at
             ON device_commands(created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_notification_events_event_type_device_time
+            ON notification_events(event_type, device_id, occurred_at);
+
+            CREATE INDEX IF NOT EXISTS idx_notification_events_result_id
+            ON notification_events(result_id);
+
+            CREATE INDEX IF NOT EXISTS idx_notification_events_device_fruit_time
+            ON notification_events(device_id, fruit_name, occurred_at);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_deliveries_event_provider
+            ON notification_deliveries(notification_event_id, provider_user_id);
+
+            CREATE INDEX IF NOT EXISTS idx_notification_deliveries_status_created
+            ON notification_deliveries(status, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_notification_deliveries_event
+            ON notification_deliveries(notification_event_id);
+
+            CREATE INDEX IF NOT EXISTS idx_annotated_image_cache_cached_until
+            ON annotated_image_cache(cached_until);
 
             CREATE TABLE IF NOT EXISTS staff_invites (
                 invite_id TEXT PRIMARY KEY,

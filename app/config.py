@@ -18,6 +18,16 @@ class Settings:
     command_default_timeout_seconds: float
     blob_retention_seconds: float
     blob_cleanup_interval_seconds: float
+    notifications_enabled: bool
+    notification_startup_grace_seconds: int
+    defect_notification_dedup_seconds: int
+    notification_push_batch_size: int
+    annotated_image_cache_ttl_seconds: int
+    notification_push_base_url: str
+    notification_push_endpoint_path: str
+    notification_push_timeout_seconds: float
+    notification_push_poll_interval_seconds: float
+    notification_status_poll_interval_seconds: float
 
 
 def _read_positive_float_env(var_name: str, default: float) -> float:
@@ -50,6 +60,19 @@ def _read_positive_int_env(var_name: str, default: int) -> int:
         raise RuntimeError(f"{var_name} must be greater than 0")
 
     return parsed_value
+
+
+def _read_bool_env(var_name: str, default: bool) -> bool:
+    raw_value = os.getenv(var_name, "")
+    if not raw_value:
+        return default
+
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{var_name} must be a boolean")
 
 
 def get_settings() -> Settings:
@@ -96,5 +119,40 @@ def get_settings() -> Settings:
         blob_cleanup_interval_seconds=_read_positive_float_env(
             "BLOB_CLEANUP_INTERVAL_SECONDS",
             300.0,
+        ),
+        notifications_enabled=_read_bool_env("NOTIFICATIONS_ENABLED", True),
+        notification_startup_grace_seconds=_read_positive_int_env(
+            "NOTIFICATION_STARTUP_GRACE_SECONDS",
+            120,
+        ),
+        defect_notification_dedup_seconds=_read_positive_int_env(
+            "DEFECT_NOTIFICATION_DEDUP_SECONDS",
+            10,
+        ),
+        notification_push_batch_size=_read_positive_int_env(
+            "NOTIFICATION_PUSH_BATCH_SIZE",
+            10,
+        ),
+        annotated_image_cache_ttl_seconds=_read_positive_int_env(
+            "ANNOTATED_IMAGE_CACHE_TTL_SECONDS",
+            43200,
+        ),
+        notification_push_base_url=os.getenv("NOTIFICATION_PUSH_BASE_URL", "").strip(),
+        notification_push_endpoint_path=os.getenv(
+            "NOTIFICATION_PUSH_ENDPOINT_PATH",
+            "/internal/notifications/push",
+        ).strip()
+        or "/internal/notifications/push",
+        notification_push_timeout_seconds=_read_positive_float_env(
+            "NOTIFICATION_PUSH_TIMEOUT_SECONDS",
+            10.0,
+        ),
+        notification_push_poll_interval_seconds=_read_positive_float_env(
+            "NOTIFICATION_PUSH_POLL_INTERVAL_SECONDS",
+            2.0,
+        ),
+        notification_status_poll_interval_seconds=_read_positive_float_env(
+            "NOTIFICATION_STATUS_POLL_INTERVAL_SECONDS",
+            2.0,
         ),
     )

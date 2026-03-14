@@ -408,6 +408,35 @@ class BotRevokeSelfMembershipResponse(StrictModel):
     active_device_id: Optional[str] = None
 
 
+class BotNotificationPreferencesResponse(StrictModel):
+    store_id: str
+    notifications_enabled: bool
+    device_status_enabled: bool
+    defect_detected_enabled: bool
+    can_access_notifications: bool
+    can_access_device_status: bool
+    can_access_defect_detected: bool
+
+
+class BotUpdateNotificationPreferencesRequest(BotActorRequest):
+    notifications_enabled: Optional[bool] = None
+    device_status_enabled: Optional[bool] = None
+    defect_detected_enabled: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def validate_any_preference_provided(self) -> "BotUpdateNotificationPreferencesRequest":
+        if (
+            self.notifications_enabled is None
+            and self.device_status_enabled is None
+            and self.defect_detected_enabled is None
+        ):
+            raise PydanticCustomError(
+                "notification_preferences",
+                "At least one preference field must be provided.",
+            )
+        return self
+
+
 class ScanResultPayload(BaseModel):
     session_id: Any
     image_id: str = Field(min_length=1)
@@ -443,6 +472,7 @@ CommandRequestType = Literal[
     "device.info",
     "connector.stats",
     "camera.capture",
+    "request_image",
     "tare",
 ]
 

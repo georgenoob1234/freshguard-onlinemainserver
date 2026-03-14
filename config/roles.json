@@ -19,6 +19,9 @@
       "commands.device.request_scan",
       "commands.config.write",
       "commands.maintenance.run",
+      "notifications.access",
+      "notifications.device_status",
+      "notifications.defect_detected",
       "invites.create",
       "invites.revoke",
       "users.manage",
@@ -39,6 +42,9 @@
       "commands.read",
       "commands.device.tare",
       "commands.device.request_scan",
+      "notifications.access",
+      "notifications.device_status",
+      "notifications.defect_detected",
       "memberships.revoke.self"
     ],
     "viewer": [
@@ -50,6 +56,9 @@
       "results.read.last",
       "analytics.read.summary",
       "events.read",
+      "notifications.access",
+      "notifications.device_status",
+      "notifications.defect_detected",
       "memberships.revoke.self"
     ],
     "auditor": [
@@ -61,6 +70,9 @@
       "results.read.history",
       "analytics.read.summary",
       "events.read",
+      "notifications.access",
+      "notifications.device_status",
+      "notifications.defect_detected",
       "memberships.revoke.self"
     ]
   }

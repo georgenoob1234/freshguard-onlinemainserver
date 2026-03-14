@@ -16,6 +16,16 @@ Set these before starting the app:
 - `COMMAND_DEFAULT_TIMEOUT_SECONDS` (optional, default: `15`)
 - `BLOB_RETENTION_SECONDS` (optional, default: `86400` / 24h)
 - `BLOB_CLEANUP_INTERVAL_SECONDS` (optional, default: `300` / 5m)
+- `NOTIFICATIONS_ENABLED` (optional, default: `true`)
+- `NOTIFICATION_STARTUP_GRACE_SECONDS` (optional, default: `120`)
+- `DEFECT_NOTIFICATION_DEDUP_SECONDS` (optional, default: `10`)
+- `NOTIFICATION_PUSH_BATCH_SIZE` (optional, default: `10`)
+- `ANNOTATED_IMAGE_CACHE_TTL_SECONDS` (optional, default: `43200` / 12h)
+- `NOTIFICATION_PUSH_BASE_URL` (optional, default: empty; when set OMS will push notification batches to tgbot)
+- `NOTIFICATION_PUSH_ENDPOINT_PATH` (optional, default: `/internal/notifications/push`)
+- `NOTIFICATION_PUSH_TIMEOUT_SECONDS` (optional, default: `10`)
+- `NOTIFICATION_PUSH_POLL_INTERVAL_SECONDS` (optional, default: `2`)
+- `NOTIFICATION_STATUS_POLL_INTERVAL_SECONDS` (optional, default: `2`)
 
 Example:
 
@@ -32,6 +42,16 @@ export WS_HEARTBEAT_TIMEOUT_SECONDS="60"
 export COMMAND_DEFAULT_TIMEOUT_SECONDS="15"
 export BLOB_RETENTION_SECONDS="86400"
 export BLOB_CLEANUP_INTERVAL_SECONDS="300"
+export NOTIFICATIONS_ENABLED="true"
+export NOTIFICATION_STARTUP_GRACE_SECONDS="120"
+export DEFECT_NOTIFICATION_DEDUP_SECONDS="10"
+export NOTIFICATION_PUSH_BATCH_SIZE="10"
+export ANNOTATED_IMAGE_CACHE_TTL_SECONDS="43200"
+export NOTIFICATION_PUSH_BASE_URL="http://tgbot:8081"
+export NOTIFICATION_PUSH_ENDPOINT_PATH="/internal/notifications/push"
+export NOTIFICATION_PUSH_TIMEOUT_SECONDS="10"
+export NOTIFICATION_PUSH_POLL_INTERVAL_SECONDS="2"
+export NOTIFICATION_STATUS_POLL_INTERVAL_SECONDS="2"
 ```
 
 ## Run
@@ -287,3 +307,123 @@ curl -sS "http://127.0.0.1:8000/admin/v1/blobs/<BLOB_ID>" \
   -H "X-ADMIN-KEY: ${ADMIN_KEY}" \
   --output blob.bin
 ```
+
+## Notification architecture (Milestone 6)
+
+OMS is the source of truth for notifications:
+
+- detects notification events (`device_offline`, `device_online`, `defect_detected`)
+- resolves eligible recipients (membership + ban checks + permissions + preferences)
+- persists notification events and per-recipient deliveries
+- pushes pending deliveries to tgbot internal endpoint
+- reconciles per-delivery send results and retries temporary failures
+- marks stale `pending`/`sending` deliveries as failed on startup
+
+tgbot is only the delivery/UI layer. LocalConnector is only the image-fetch executor.
+
+### Notification DB entities
+
+OMS now initializes these tables at startup in `app/db.py`:
+
+- `notification_events`
+- `notification_deliveries`
+- `notification_preferences`
+- `annotated_image_cache`
+- `device_notification_state` (restart-safe online/offline transition tracking for notification logic)
+
+## Notification preferences (bot API)
+
+Preferences are per-user per-store and are evaluated together with permissions:
+
+- `GET /bot/v1/notifications/preferences`
+- `PUT /bot/v1/notifications/preferences`
+
+Required auth:
+
+- Header: `Authorization: Bearer <TGBOT_SERVICE_TOKEN>`
+- Query/body actor fields: `provider=telegram`, `provider_user_id=<ID>`
+
+Example read:
+
+```bash
+curl -sS "http://127.0.0.1:8000/bot/v1/notifications/preferences?provider=telegram&provider_user_id=<ID>" \
+  -H "Authorization: Bearer ${TGBOT_SERVICE_TOKEN}"
+```
+
+Example update:
+
+```bash
+curl -sS -X PUT "http://127.0.0.1:8000/bot/v1/notifications/preferences" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${TGBOT_SERVICE_TOKEN}" \
+  -d '{
+    "provider": "telegram",
+    "provider_user_id": "<ID>",
+    "notifications_enabled": true,
+    "device_status_enabled": true,
+    "defect_detected_enabled": true
+  }'
+```
+
+## OMS -> tgbot internal push contract
+
+When `NOTIFICATION_PUSH_BASE_URL` is configured, OMS pushes batches to:
+
+- `POST {NOTIFICATION_PUSH_BASE_URL}{NOTIFICATION_PUSH_ENDPOINT_PATH}`
+- default path: `/internal/notifications/push`
+
+Request body:
+
+```json
+{
+  "batch_id": "uuid",
+  "deliveries": [
+    {
+      "notification_delivery_id": "uuid",
+      "provider_user_id": "123456789",
+      "payload": {
+        "event_type": "defect_detected",
+        "store_name": "Main Store",
+        "device_display_name": "Counter Scale",
+        "occurred_at": "2026-03-14T12:00:00Z",
+        "fruit_name": "banana",
+        "defect_type": "bruise",
+        "result_id": "42",
+        "can_show_image": true
+      }
+    }
+  ]
+}
+```
+
+Response body (from tgbot to OMS):
+
+```json
+{
+  "batch_id": "uuid",
+  "results": [
+    {"notification_delivery_id": "uuid", "status": "sent"},
+    {
+      "notification_delivery_id": "uuid-2",
+      "status": "failed",
+      "failure_reason": "telegram_forbidden"
+    }
+  ]
+}
+```
+
+## Defect notification image retrieval flow
+
+Bot callback endpoint:
+
+- `GET /bot/v1/notifications/results/{result_id}/image`
+- query: `provider`, `provider_user_id`
+- auth: `Authorization: Bearer <TGBOT_SERVICE_TOKEN>`
+
+Behavior:
+
+- OMS verifies membership/permissions and that the requesting provider user had a delivery for that defect result.
+- OMS returns cached annotated image if available and not expired.
+- On cache miss, OMS sends LocalConnector command `request_image` through existing WS command broker.
+- LocalConnector uploads image bytes through existing blob flow (`POST /connector/v1/blobs`).
+- OMS annotates the image, stores it in blobs, caches linkage in `annotated_image_cache`, and returns annotated bytes.

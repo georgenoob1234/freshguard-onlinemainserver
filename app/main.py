@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
+import logging
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -14,7 +15,15 @@ from app.api.connector import router as connector_router
 from app.api.update import router as update_router
 from app.config import get_settings
 from app.db import init_db
+from app.notification_delivery_worker import (
+    NotificationDeliveryWorker,
+    cleanup_stale_notification_deliveries_once,
+)
+from app.notification_status_monitor import NotificationStatusMonitor
 from app.roles import load_roles_config
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -29,12 +38,42 @@ async def lifespan(_: FastAPI):
             retention_s=settings.blob_retention_seconds,
         )
     )
+    status_monitor = NotificationStatusMonitor(
+        database_path=settings.database_path,
+        online_threshold_seconds=settings.online_threshold_seconds,
+        startup_grace_seconds=settings.notification_startup_grace_seconds,
+        poll_interval_seconds=settings.notification_status_poll_interval_seconds,
+        enabled=settings.notifications_enabled,
+    )
+    delivery_worker = NotificationDeliveryWorker(
+        database_path=settings.database_path,
+        push_base_url=settings.notification_push_base_url,
+        push_endpoint_path=settings.notification_push_endpoint_path,
+        batch_size=settings.notification_push_batch_size,
+        timeout_seconds=settings.notification_push_timeout_seconds,
+        poll_interval_seconds=settings.notification_push_poll_interval_seconds,
+        enabled=settings.notifications_enabled,
+    )
+    stale_cleanup_count = cleanup_stale_notification_deliveries_once(settings.database_path)
+    if stale_cleanup_count > 0:
+        logger.info(
+            "startup stale notification cleanup failed_count=%s",
+            stale_cleanup_count,
+        )
+    status_monitor_task = asyncio.create_task(status_monitor.run_forever())
+    delivery_worker_task = asyncio.create_task(delivery_worker.run_forever())
     try:
         yield
     finally:
         cleanup_task.cancel()
+        status_monitor_task.cancel()
+        delivery_worker_task.cancel()
         with suppress(asyncio.CancelledError):
             await cleanup_task
+        with suppress(asyncio.CancelledError):
+            await status_monitor_task
+        with suppress(asyncio.CancelledError):
+            await delivery_worker_task
 
 
 app = FastAPI(title="OnlineMainServer", lifespan=lifespan)

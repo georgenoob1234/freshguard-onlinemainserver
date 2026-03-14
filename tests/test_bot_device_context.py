@@ -442,6 +442,12 @@ def test_bot_device_status_returns_status_for_device_in_active_store(client_and_
         "connected": False,
         "last_seen_at": now_utc.isoformat().replace("+00:00", "Z"),
         "online": True,
+        "actions": {
+            "show_photo": False,
+            "show_tare": False,
+            "show_tare_set": False,
+            "show_tare_reset": False,
+        },
     }
 
 
