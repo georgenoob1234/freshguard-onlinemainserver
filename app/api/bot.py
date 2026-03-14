@@ -32,7 +32,13 @@ from app.models import (
     BotRevokeSelfMembershipRequest,
     BotRevokeSelfMembershipResponse,
     BotNotificationPreferencesResponse,
+    BotNotificationSettingsCapabilities,
+    BotNotificationSettingsPreferences,
+    BotNotificationSettingsStoreSummary,
+    BotNotificationSettingsStoresResponse,
+    BotStoreNotificationSettingsResponse,
     BotUpdateNotificationPreferencesRequest,
+    BotUpdateStoreNotificationSettingsRequest,
     BotSessionEnsureRequest,
     BotSessionEnsureResponse,
     BotSetActiveDeviceRequest,
@@ -362,6 +368,232 @@ def _require_active_store_membership_row(
     if membership_row is None:
         raise HTTPException(status_code=400, detail="no_active_store")
     return membership_row
+
+
+def _is_store_active(membership_row: sqlite3.Row) -> bool:
+    return int(membership_row["store_is_active"]) == 1
+
+
+def _is_notification_settings_membership_eligible(membership_row: sqlite3.Row) -> bool:
+    return _is_store_active(membership_row) and is_permission_granted(
+        membership_row["role"],
+        "notifications.access",
+    )
+
+
+def _select_notification_settings_membership_rows(
+    connection: sqlite3.Connection,
+    *,
+    user_id: str,
+) -> list[sqlite3.Row]:
+    memberships = _select_active_membership_rows(connection, user_id=user_id)
+    return [
+        membership
+        for membership in memberships
+        if _is_notification_settings_membership_eligible(membership)
+    ]
+
+
+def _require_notification_settings_membership_row(
+    connection: sqlite3.Connection,
+    *,
+    user_id: str,
+    store_id: str,
+) -> sqlite3.Row:
+    membership_row = _select_active_membership_row(
+        connection,
+        user_id=user_id,
+        store_id=store_id,
+    )
+    if membership_row is None or not _is_store_active(membership_row):
+        logger.warning(
+            "Bot notification settings denied unavailable store user_id=%s store_id=%s",
+            user_id,
+            store_id,
+        )
+        raise HTTPException(status_code=404, detail="store_not_available")
+
+    if not is_permission_granted(membership_row["role"], "notifications.access"):
+        logger.warning(
+            "Bot notification settings denied missing access permission user_id=%s store_id=%s role=%s",
+            user_id,
+            store_id,
+            membership_row["role"],
+        )
+        raise HTTPException(status_code=403, detail="notifications_not_available")
+    return membership_row
+
+
+def _require_active_notification_settings_membership_row(
+    connection: sqlite3.Connection,
+    *,
+    user_id: str,
+) -> sqlite3.Row:
+    active_membership_row = _require_active_store_membership_row(
+        connection,
+        user_id=user_id,
+    )
+    return _require_notification_settings_membership_row(
+        connection,
+        user_id=user_id,
+        store_id=active_membership_row["store_id"],
+    )
+
+
+def _build_store_notification_settings_response(
+    *,
+    store_id: str,
+    store_name: str,
+    preferences_view,
+) -> BotStoreNotificationSettingsResponse:
+    return BotStoreNotificationSettingsResponse(
+        store_id=store_id,
+        store_name=store_name,
+        preferences=BotNotificationSettingsPreferences(
+            notifications_enabled=preferences_view.preferences.notifications_enabled,
+            device_status_enabled=preferences_view.preferences.device_status_enabled,
+            defect_detected_enabled=preferences_view.preferences.defect_detected_enabled,
+        ),
+        capabilities=BotNotificationSettingsCapabilities(
+            can_access_notifications=preferences_view.can_access_notifications,
+            can_subscribe_device_status=preferences_view.can_subscribe_device_status,
+            can_subscribe_defect_detected=preferences_view.can_subscribe_defect_detected,
+        ),
+    )
+
+
+def _load_store_notification_settings_response(
+    connection: sqlite3.Connection,
+    *,
+    user_id: str,
+    membership_row: sqlite3.Row,
+) -> BotStoreNotificationSettingsResponse:
+    preferences_view = _load_notification_preference_view(
+        connection,
+        user_id=user_id,
+        membership_row=membership_row,
+    )
+    return _build_store_notification_settings_response(
+        store_id=membership_row["store_id"],
+        store_name=membership_row["store_display_name"],
+        preferences_view=preferences_view,
+    )
+
+
+def _load_notification_preference_view(
+    connection: sqlite3.Connection,
+    *,
+    user_id: str,
+    membership_row: sqlite3.Row,
+):
+    preferences = load_notification_preferences(
+        connection,
+        user_id=user_id,
+        store_id=membership_row["store_id"],
+    )
+    return build_notification_preference_view(
+        user_id=user_id,
+        store_id=membership_row["store_id"],
+        role=membership_row["role"],
+        preferences=preferences,
+    )
+
+
+def _validate_notification_settings_update_allowed(
+    *,
+    user_id: str,
+    store_id: str,
+    provider_user_id: str,
+    preferences_view,
+    notifications_enabled: bool | None,
+    device_status_enabled: bool | None,
+    defect_detected_enabled: bool | None,
+) -> None:
+    if not preferences_view.can_access_notifications:
+        logger.warning(
+            "Bot notification settings update denied no access user_id=%s provider_user_id=%s store_id=%s",
+            user_id,
+            provider_user_id,
+            store_id,
+        )
+        raise HTTPException(status_code=403, detail="notifications_not_available")
+
+    if device_status_enabled is not None and not preferences_view.can_subscribe_device_status:
+        logger.warning(
+            "Bot notification settings update denied device_status capability user_id=%s provider_user_id=%s store_id=%s",
+            user_id,
+            provider_user_id,
+            store_id,
+        )
+        raise HTTPException(status_code=403, detail="notification_option_not_available")
+
+    if defect_detected_enabled is not None and not preferences_view.can_subscribe_defect_detected:
+        logger.warning(
+            "Bot notification settings update denied defect capability user_id=%s provider_user_id=%s store_id=%s",
+            user_id,
+            provider_user_id,
+            store_id,
+        )
+        raise HTTPException(status_code=403, detail="notification_option_not_available")
+
+
+def _update_store_notification_settings(
+    connection: sqlite3.Connection,
+    *,
+    user_id: str,
+    provider_user_id: str,
+    membership_row: sqlite3.Row,
+    notifications_enabled: bool | None,
+    device_status_enabled: bool | None,
+    defect_detected_enabled: bool | None,
+) -> BotStoreNotificationSettingsResponse:
+    preferences_view = _load_notification_preference_view(
+        connection,
+        user_id=user_id,
+        membership_row=membership_row,
+    )
+    _validate_notification_settings_update_allowed(
+        user_id=user_id,
+        store_id=membership_row["store_id"],
+        provider_user_id=provider_user_id,
+        preferences_view=preferences_view,
+        notifications_enabled=notifications_enabled,
+        device_status_enabled=device_status_enabled,
+        defect_detected_enabled=defect_detected_enabled,
+    )
+    updated_preferences = upsert_notification_preferences(
+        connection,
+        user_id=user_id,
+        store_id=membership_row["store_id"],
+        notifications_enabled=notifications_enabled,
+        device_status_enabled=device_status_enabled,
+        defect_detected_enabled=defect_detected_enabled,
+    )
+    updated_view = build_notification_preference_view(
+        user_id=user_id,
+        store_id=membership_row["store_id"],
+        role=membership_row["role"],
+        preferences=updated_preferences,
+    )
+    return _build_store_notification_settings_response(
+        store_id=membership_row["store_id"],
+        store_name=membership_row["store_display_name"],
+        preferences_view=updated_view,
+    )
+
+
+def _to_legacy_notification_preferences_response(
+    settings_view: BotStoreNotificationSettingsResponse,
+) -> BotNotificationPreferencesResponse:
+    return BotNotificationPreferencesResponse(
+        store_id=settings_view.store_id,
+        notifications_enabled=settings_view.preferences.notifications_enabled,
+        device_status_enabled=settings_view.preferences.device_status_enabled,
+        defect_detected_enabled=settings_view.preferences.defect_detected_enabled,
+        can_access_notifications=settings_view.capabilities.can_access_notifications,
+        can_access_device_status=settings_view.capabilities.can_subscribe_device_status,
+        can_access_defect_detected=settings_view.capabilities.can_subscribe_defect_detected,
+    )
 
 
 def _select_store_device_rows(
@@ -1275,6 +1507,136 @@ def set_active_device(
 
 
 @router.get(
+    "/notifications/settings/stores",
+    response_model=BotNotificationSettingsStoresResponse,
+)
+def list_bot_notification_settings_stores(
+    provider: str = Query(..., min_length=1),
+    provider_user_id: str = Query(..., min_length=1),
+    _: BotService = Depends(resolve_authenticated_bot_service),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> BotNotificationSettingsStoresResponse:
+    normalized_provider = _require_supported_provider(provider)
+    user_row = _require_known_user(
+        connection,
+        provider=normalized_provider,
+        provider_user_id=provider_user_id,
+    )
+    _require_not_banned(user_row)
+    memberships = _select_notification_settings_membership_rows(
+        connection,
+        user_id=user_row["user_id"],
+    )
+    response = BotNotificationSettingsStoresResponse(
+        items=[
+            BotNotificationSettingsStoreSummary(
+                store_id=membership["store_id"],
+                store_name=membership["store_display_name"],
+            )
+            for membership in memberships
+        ]
+    )
+    logger.info(
+        "Bot notification settings stores listed user_id=%s provider_user_id=%s eligible_count=%s",
+        user_row["user_id"],
+        provider_user_id,
+        len(response.items),
+    )
+    return response
+
+
+@router.get(
+    "/notifications/settings/stores/{store_id}",
+    response_model=BotStoreNotificationSettingsResponse,
+)
+def get_bot_store_notification_settings(
+    store_id: str,
+    provider: str = Query(..., min_length=1),
+    provider_user_id: str = Query(..., min_length=1),
+    _: BotService = Depends(resolve_authenticated_bot_service),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> BotStoreNotificationSettingsResponse:
+    normalized_provider = _require_supported_provider(provider)
+    user_row = _require_known_user(
+        connection,
+        provider=normalized_provider,
+        provider_user_id=provider_user_id,
+    )
+    _require_not_banned(user_row)
+    membership_row = _require_notification_settings_membership_row(
+        connection,
+        user_id=user_row["user_id"],
+        store_id=store_id,
+    )
+    response = _load_store_notification_settings_response(
+        connection,
+        user_id=user_row["user_id"],
+        membership_row=membership_row,
+    )
+    logger.info(
+        "Bot notification settings loaded user_id=%s provider_user_id=%s store_id=%s",
+        user_row["user_id"],
+        provider_user_id,
+        store_id,
+    )
+    return response
+
+
+@router.put(
+    "/notifications/settings/stores/{store_id}",
+    response_model=BotStoreNotificationSettingsResponse,
+)
+def update_bot_store_notification_settings(
+    store_id: str,
+    payload: BotUpdateStoreNotificationSettingsRequest,
+    _: BotService = Depends(resolve_authenticated_bot_service),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> BotStoreNotificationSettingsResponse:
+    normalized_provider = _require_supported_provider(payload.provider)
+    user_id: str
+    response: BotStoreNotificationSettingsResponse
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        user_row = _require_known_user(
+            connection,
+            provider=normalized_provider,
+            provider_user_id=payload.provider_user_id,
+        )
+        _require_not_banned(user_row)
+        user_id = user_row["user_id"]
+        membership_row = _require_notification_settings_membership_row(
+            connection,
+            user_id=user_id,
+            store_id=store_id,
+        )
+        response = _update_store_notification_settings(
+            connection,
+            user_id=user_id,
+            provider_user_id=payload.provider_user_id,
+            membership_row=membership_row,
+            notifications_enabled=payload.notifications_enabled,
+            device_status_enabled=payload.device_status_enabled,
+            defect_detected_enabled=payload.defect_detected_enabled,
+        )
+        connection.execute("COMMIT")
+    except HTTPException:
+        rollback_quietly(connection)
+        raise
+    except Exception as error:
+        rollback_quietly(connection)
+        logger.exception("Unexpected failure while updating bot notification settings.")
+        raise HTTPException(status_code=500, detail="Internal server error.") from error
+
+    logger.info(
+        "Bot notification settings updated user_id=%s provider_user_id=%s store_id=%s",
+        user_id,
+        payload.provider_user_id,
+        store_id,
+    )
+    return response
+
+
+@router.get(
     "/notifications/preferences",
     response_model=BotNotificationPreferencesResponse,
 )
@@ -1291,31 +1653,16 @@ def get_bot_notification_preferences(
         provider_user_id=provider_user_id,
     )
     _require_not_banned(user_row)
-
-    membership_row = _require_active_store_membership_row(
+    membership_row = _require_active_notification_settings_membership_row(
         connection,
         user_id=user_row["user_id"],
     )
-    preferences = load_notification_preferences(
+    settings_view = _load_store_notification_settings_response(
         connection,
         user_id=user_row["user_id"],
-        store_id=membership_row["store_id"],
+        membership_row=membership_row,
     )
-    view = build_notification_preference_view(
-        user_id=user_row["user_id"],
-        store_id=membership_row["store_id"],
-        role=membership_row["role"],
-        preferences=preferences,
-    )
-    return BotNotificationPreferencesResponse(
-        store_id=view.store_id,
-        notifications_enabled=view.preferences.notifications_enabled,
-        device_status_enabled=view.preferences.device_status_enabled,
-        defect_detected_enabled=view.preferences.defect_detected_enabled,
-        can_access_notifications=view.can_access_notifications,
-        can_access_device_status=view.can_access_device_status,
-        can_access_defect_detected=view.can_access_defect_detected,
-    )
+    return _to_legacy_notification_preferences_response(settings_view)
 
 
 @router.put(
@@ -1328,47 +1675,45 @@ def update_bot_notification_preferences(
     connection: sqlite3.Connection = Depends(get_db),
 ) -> BotNotificationPreferencesResponse:
     normalized_provider = _require_supported_provider(payload.provider)
-    user_row = _require_known_user(
-        connection,
-        provider=normalized_provider,
-        provider_user_id=payload.provider_user_id,
-    )
-    _require_not_banned(user_row)
-    membership_row = _require_active_store_membership_row(
-        connection,
-        user_id=user_row["user_id"],
-    )
+    user_id: str
+    updated_response: BotStoreNotificationSettingsResponse
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        user_row = _require_known_user(
+            connection,
+            provider=normalized_provider,
+            provider_user_id=payload.provider_user_id,
+        )
+        _require_not_banned(user_row)
+        user_id = user_row["user_id"]
+        membership_row = _require_active_notification_settings_membership_row(
+            connection,
+            user_id=user_id,
+        )
+        updated_response = _update_store_notification_settings(
+            connection,
+            user_id=user_id,
+            provider_user_id=payload.provider_user_id,
+            membership_row=membership_row,
+            notifications_enabled=payload.notifications_enabled,
+            device_status_enabled=payload.device_status_enabled,
+            defect_detected_enabled=payload.defect_detected_enabled,
+        )
+        connection.execute("COMMIT")
+    except HTTPException:
+        rollback_quietly(connection)
+        raise
+    except Exception as error:
+        rollback_quietly(connection)
+        logger.exception("Unexpected failure while updating bot notification preferences.")
+        raise HTTPException(status_code=500, detail="Internal server error.") from error
 
-    updated_preferences = upsert_notification_preferences(
-        connection,
-        user_id=user_row["user_id"],
-        store_id=membership_row["store_id"],
-        notifications_enabled=payload.notifications_enabled,
-        device_status_enabled=payload.device_status_enabled,
-        defect_detected_enabled=payload.defect_detected_enabled,
-    )
-    connection.commit()
-
-    view = build_notification_preference_view(
-        user_id=user_row["user_id"],
-        store_id=membership_row["store_id"],
-        role=membership_row["role"],
-        preferences=updated_preferences,
-    )
     logger.info(
         "Bot notification preferences updated user_id=%s store_id=%s",
-        view.user_id,
-        view.store_id,
+        user_id,
+        updated_response.store_id,
     )
-    return BotNotificationPreferencesResponse(
-        store_id=view.store_id,
-        notifications_enabled=view.preferences.notifications_enabled,
-        device_status_enabled=view.preferences.device_status_enabled,
-        defect_detected_enabled=view.preferences.defect_detected_enabled,
-        can_access_notifications=view.can_access_notifications,
-        can_access_device_status=view.can_access_device_status,
-        can_access_defect_detected=view.can_access_defect_detected,
-    )
+    return _to_legacy_notification_preferences_response(updated_response)
 
 
 @router.get("/devices/{device_id}/status", response_model=BotDeviceStatusResponse)

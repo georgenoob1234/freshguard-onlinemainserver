@@ -408,6 +408,53 @@ class BotRevokeSelfMembershipResponse(StrictModel):
     active_device_id: Optional[str] = None
 
 
+class BotNotificationSettingsStoreSummary(StrictModel):
+    store_id: str
+    store_name: str
+
+
+class BotNotificationSettingsStoresResponse(StrictModel):
+    items: list[BotNotificationSettingsStoreSummary]
+
+
+class BotNotificationSettingsPreferences(StrictModel):
+    notifications_enabled: bool
+    device_status_enabled: bool
+    defect_detected_enabled: bool
+
+
+class BotNotificationSettingsCapabilities(StrictModel):
+    can_access_notifications: bool
+    can_subscribe_device_status: bool
+    can_subscribe_defect_detected: bool
+
+
+class BotStoreNotificationSettingsResponse(StrictModel):
+    store_id: str
+    store_name: str
+    preferences: BotNotificationSettingsPreferences
+    capabilities: BotNotificationSettingsCapabilities
+
+
+class BotUpdateStoreNotificationSettingsRequest(BotActorRequest):
+    notifications_enabled: Optional[bool] = None
+    device_status_enabled: Optional[bool] = None
+    defect_detected_enabled: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def validate_any_preference_provided(self) -> "BotUpdateStoreNotificationSettingsRequest":
+        if (
+            self.notifications_enabled is None
+            and self.device_status_enabled is None
+            and self.defect_detected_enabled is None
+        ):
+            raise PydanticCustomError(
+                "notification_preferences",
+                "At least one preference field must be provided.",
+            )
+        return self
+
+
 class BotNotificationPreferencesResponse(StrictModel):
     store_id: str
     notifications_enabled: bool

@@ -119,8 +119,23 @@ class NotificationPreferenceView:
     store_id: str
     preferences: NotificationPreferenceState
     can_access_notifications: bool
-    can_access_device_status: bool
-    can_access_defect_detected: bool
+    can_subscribe_device_status: bool
+    can_subscribe_defect_detected: bool
+
+    @property
+    def can_access_device_status(self) -> bool:
+        return self.can_subscribe_device_status
+
+    @property
+    def can_access_defect_detected(self) -> bool:
+        return self.can_subscribe_defect_detected
+
+
+@dataclass(frozen=True)
+class NotificationPreferenceCapabilities:
+    can_access_notifications: bool
+    can_subscribe_device_status: bool
+    can_subscribe_defect_detected: bool
 
 
 @dataclass(frozen=True)
@@ -254,13 +269,27 @@ def build_notification_preference_view(
     role: str,
     preferences: NotificationPreferenceState,
 ) -> NotificationPreferenceView:
+    capabilities = resolve_notification_capabilities(role=role)
     return NotificationPreferenceView(
         user_id=user_id,
         store_id=store_id,
         preferences=preferences,
-        can_access_notifications=is_permission_granted(role, "notifications.access"),
-        can_access_device_status=is_permission_granted(role, "notifications.device_status"),
-        can_access_defect_detected=is_permission_granted(role, "notifications.defect_detected"),
+        can_access_notifications=capabilities.can_access_notifications,
+        can_subscribe_device_status=capabilities.can_subscribe_device_status,
+        can_subscribe_defect_detected=capabilities.can_subscribe_defect_detected,
+    )
+
+
+def resolve_notification_capabilities(*, role: str) -> NotificationPreferenceCapabilities:
+    can_access_notifications = is_permission_granted(role, "notifications.access")
+    return NotificationPreferenceCapabilities(
+        can_access_notifications=can_access_notifications,
+        can_subscribe_device_status=(
+            can_access_notifications and is_permission_granted(role, "notifications.device_status")
+        ),
+        can_subscribe_defect_detected=(
+            can_access_notifications and is_permission_granted(role, "notifications.defect_detected")
+        ),
     )
 
 

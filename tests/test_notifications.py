@@ -176,6 +176,61 @@ def _set_user_context(
         connection.commit()
 
 
+def _deactivate_store(database_path: Path, *, store_id: str) -> None:
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            UPDATE stores
+            SET is_active = 0,
+                updated_at = ?
+            WHERE store_id = ?
+            """,
+            (datetime.now(timezone.utc).isoformat(), store_id),
+        )
+        connection.commit()
+
+
+def _revoke_membership(
+    database_path: Path,
+    *,
+    user_id: str,
+    store_id: str,
+) -> None:
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            UPDATE store_memberships
+            SET revoked_at = ?
+            WHERE user_id = ? AND store_id = ? AND revoked_at IS NULL
+            """,
+            (datetime.now(timezone.utc).isoformat(), user_id, store_id),
+        )
+        connection.commit()
+
+
+def _count_notification_preference_rows(
+    database_path: Path,
+    *,
+    user_id: str,
+    store_id: str,
+) -> int:
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM notification_preferences
+            WHERE user_id = ? AND store_id = ?
+            """,
+            (user_id, store_id),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _write_roles_config(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def _register_device(client: TestClient, *, store_id: str) -> tuple[str, str]:
     enroll_response = client.post(
         "/admin/v1/enroll_tokens",
@@ -330,6 +385,372 @@ def test_notification_preferences_and_eligibility_filters(client_and_paths):
         connection.close()
     provider_ids = sorted(recipient.provider_user_id for recipient in recipients)
     assert provider_ids == ["notif-ok"]
+
+
+def test_notification_settings_store_picker_filters_and_empty_list(client_and_paths):
+    client, database_path, _ = client_and_paths
+    user = _ensure_user(
+        client,
+        provider_user_id="settings-picker-user",
+        provider_chat_id="settings-picker-chat",
+        username="settings_picker_user",
+    )
+    eligible_store = _create_store(client, display_name="Eligible Store")
+    inactive_store = _create_store(client, display_name="Inactive Store")
+    no_access_store = _create_store(client, display_name="No Access Store")
+    revoked_store = _create_store(client, display_name="Revoked Store")
+
+    _seed_membership(
+        database_path,
+        store_id=eligible_store["store_id"],
+        user_id=user["user_id"],
+        role="operator",
+    )
+    _seed_membership(
+        database_path,
+        store_id=inactive_store["store_id"],
+        user_id=user["user_id"],
+        role="operator",
+    )
+    _seed_membership(
+        database_path,
+        store_id=no_access_store["store_id"],
+        user_id=user["user_id"],
+        role="no_notification_role",
+    )
+    _seed_membership(
+        database_path,
+        store_id=revoked_store["store_id"],
+        user_id=user["user_id"],
+        role="operator",
+    )
+    _deactivate_store(database_path, store_id=inactive_store["store_id"])
+    _revoke_membership(
+        database_path,
+        user_id=user["user_id"],
+        store_id=revoked_store["store_id"],
+    )
+
+    list_response = client.get(
+        "/bot/v1/notifications/settings/stores",
+        params={"provider": "telegram", "provider_user_id": "settings-picker-user"},
+        headers=_bot_headers(),
+    )
+    assert list_response.status_code == 200
+    assert list_response.json() == {
+        "items": [
+            {
+                "store_id": eligible_store["store_id"],
+                "store_name": "Eligible Store",
+            }
+        ]
+    }
+
+    user_with_no_stores = _ensure_user(
+        client,
+        provider_user_id="settings-picker-empty-user",
+        provider_chat_id="settings-picker-empty-chat",
+        username="settings_picker_empty_user",
+    )
+    _ = user_with_no_stores
+    empty_response = client.get(
+        "/bot/v1/notifications/settings/stores",
+        params={"provider": "telegram", "provider_user_id": "settings-picker-empty-user"},
+        headers=_bot_headers(),
+    )
+    assert empty_response.status_code == 200
+    assert empty_response.json() == {"items": []}
+
+
+def test_get_store_notification_settings_returns_preferences_and_capabilities(client_and_paths):
+    client, database_path, _ = client_and_paths
+    store = _create_store(client, display_name="Settings Store")
+    user = _ensure_user(
+        client,
+        provider_user_id="settings-get-user",
+        provider_chat_id="settings-get-chat",
+        username="settings_get_user",
+    )
+    _seed_membership(
+        database_path,
+        store_id=store["store_id"],
+        user_id=user["user_id"],
+        role="operator",
+    )
+
+    response = client.get(
+        f"/bot/v1/notifications/settings/stores/{store['store_id']}",
+        params={"provider": "telegram", "provider_user_id": "settings-get-user"},
+        headers=_bot_headers(),
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "store_id": store["store_id"],
+        "store_name": "Settings Store",
+        "preferences": {
+            "notifications_enabled": True,
+            "device_status_enabled": True,
+            "defect_detected_enabled": True,
+        },
+        "capabilities": {
+            "can_access_notifications": True,
+            "can_subscribe_device_status": True,
+            "can_subscribe_defect_detected": True,
+        },
+    }
+
+
+def test_get_store_notification_settings_rechecks_membership_access(client_and_paths):
+    client, database_path, _ = client_and_paths
+    store = _create_store(client, display_name="Access Store")
+    user = _ensure_user(
+        client,
+        provider_user_id="settings-access-user",
+        provider_chat_id="settings-access-chat",
+        username="settings_access_user",
+    )
+    _seed_membership(
+        database_path,
+        store_id=store["store_id"],
+        user_id=user["user_id"],
+        role="operator",
+    )
+
+    initial_response = client.get(
+        f"/bot/v1/notifications/settings/stores/{store['store_id']}",
+        params={"provider": "telegram", "provider_user_id": "settings-access-user"},
+        headers=_bot_headers(),
+    )
+    assert initial_response.status_code == 200
+
+    _revoke_membership(
+        database_path,
+        user_id=user["user_id"],
+        store_id=store["store_id"],
+    )
+    revoked_response = client.get(
+        f"/bot/v1/notifications/settings/stores/{store['store_id']}",
+        params={"provider": "telegram", "provider_user_id": "settings-access-user"},
+        headers=_bot_headers(),
+    )
+    assert revoked_response.status_code == 404
+    assert revoked_response.json() == {"detail": "store_not_available"}
+
+
+def test_update_store_notification_settings_master_toggle_preserves_subtypes(client_and_paths):
+    client, database_path, _ = client_and_paths
+    store = _create_store(client, display_name="Master Toggle Store")
+    user = _ensure_user(
+        client,
+        provider_user_id="settings-master-user",
+        provider_chat_id="settings-master-chat",
+        username="settings_master_user",
+    )
+    _seed_membership(
+        database_path,
+        store_id=store["store_id"],
+        user_id=user["user_id"],
+        role="operator",
+    )
+
+    subtype_update_response = client.put(
+        f"/bot/v1/notifications/settings/stores/{store['store_id']}",
+        json={
+            "provider": "telegram",
+            "provider_user_id": "settings-master-user",
+            "device_status_enabled": False,
+            "defect_detected_enabled": True,
+        },
+        headers=_bot_headers(),
+    )
+    assert subtype_update_response.status_code == 200
+
+    master_update_response = client.put(
+        f"/bot/v1/notifications/settings/stores/{store['store_id']}",
+        json={
+            "provider": "telegram",
+            "provider_user_id": "settings-master-user",
+            "notifications_enabled": False,
+        },
+        headers=_bot_headers(),
+    )
+    assert master_update_response.status_code == 200
+    assert master_update_response.json()["preferences"] == {
+        "notifications_enabled": False,
+        "device_status_enabled": False,
+        "defect_detected_enabled": True,
+    }
+
+
+def test_update_store_notification_settings_rejects_disallowed_subtype_updates(
+    client_and_paths,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client, database_path, _ = client_and_paths
+    custom_roles_path = database_path.parent / "roles-notification-access-only.json"
+    _write_roles_config(
+        custom_roles_path,
+        {
+            "roles": {
+                "root": ["*"],
+                "notifications_access_only": [
+                    "bot.user_context.read",
+                    "bot.store.select",
+                    "stores.read",
+                    "notifications.access",
+                ],
+            }
+        },
+    )
+    monkeypatch.setenv("ROLES_CONFIG_PATH", str(custom_roles_path))
+    clear_roles_cache()
+
+    store = _create_store(client, display_name="Capability Store")
+    user = _ensure_user(
+        client,
+        provider_user_id="settings-capability-user",
+        provider_chat_id="settings-capability-chat",
+        username="settings_capability_user",
+    )
+    _seed_membership(
+        database_path,
+        store_id=store["store_id"],
+        user_id=user["user_id"],
+        role="notifications_access_only",
+    )
+
+    get_response = client.get(
+        f"/bot/v1/notifications/settings/stores/{store['store_id']}",
+        params={"provider": "telegram", "provider_user_id": "settings-capability-user"},
+        headers=_bot_headers(),
+    )
+    assert get_response.status_code == 200
+    assert get_response.json()["preferences"]["defect_detected_enabled"] is True
+    assert get_response.json()["capabilities"] == {
+        "can_access_notifications": True,
+        "can_subscribe_device_status": False,
+        "can_subscribe_defect_detected": False,
+    }
+
+    disallowed_subtype_response = client.put(
+        f"/bot/v1/notifications/settings/stores/{store['store_id']}",
+        json={
+            "provider": "telegram",
+            "provider_user_id": "settings-capability-user",
+            "defect_detected_enabled": False,
+        },
+        headers=_bot_headers(),
+    )
+    assert disallowed_subtype_response.status_code == 403
+    assert disallowed_subtype_response.json() == {"detail": "notification_option_not_available"}
+
+    allowed_master_response = client.put(
+        f"/bot/v1/notifications/settings/stores/{store['store_id']}",
+        json={
+            "provider": "telegram",
+            "provider_user_id": "settings-capability-user",
+            "notifications_enabled": False,
+        },
+        headers=_bot_headers(),
+    )
+    assert allowed_master_response.status_code == 200
+    assert allowed_master_response.json()["preferences"]["notifications_enabled"] is False
+
+
+def test_update_store_notification_settings_rejects_stale_store_access(client_and_paths):
+    client, database_path, _ = client_and_paths
+    store = _create_store(client, display_name="Stale Store")
+    user = _ensure_user(
+        client,
+        provider_user_id="settings-stale-user",
+        provider_chat_id="settings-stale-chat",
+        username="settings_stale_user",
+    )
+    _seed_membership(
+        database_path,
+        store_id=store["store_id"],
+        user_id=user["user_id"],
+        role="operator",
+    )
+
+    list_response = client.get(
+        "/bot/v1/notifications/settings/stores",
+        params={"provider": "telegram", "provider_user_id": "settings-stale-user"},
+        headers=_bot_headers(),
+    )
+    assert list_response.status_code == 200
+    assert list_response.json()["items"]
+
+    _deactivate_store(database_path, store_id=store["store_id"])
+    update_response = client.put(
+        f"/bot/v1/notifications/settings/stores/{store['store_id']}",
+        json={
+            "provider": "telegram",
+            "provider_user_id": "settings-stale-user",
+            "notifications_enabled": False,
+        },
+        headers=_bot_headers(),
+    )
+    assert update_response.status_code == 404
+    assert update_response.json() == {"detail": "store_not_available"}
+
+
+def test_store_notification_settings_missing_row_defaults_and_upserts_on_first_update(client_and_paths):
+    client, database_path, _ = client_and_paths
+    store = _create_store(client, display_name="Missing Prefs Store")
+    user = _ensure_user(
+        client,
+        provider_user_id="settings-missing-row-user",
+        provider_chat_id="settings-missing-row-chat",
+        username="settings_missing_row_user",
+    )
+    _seed_membership(
+        database_path,
+        store_id=store["store_id"],
+        user_id=user["user_id"],
+        role="operator",
+    )
+
+    assert (
+        _count_notification_preference_rows(
+            database_path,
+            user_id=user["user_id"],
+            store_id=store["store_id"],
+        )
+        == 0
+    )
+
+    read_response = client.get(
+        f"/bot/v1/notifications/settings/stores/{store['store_id']}",
+        params={"provider": "telegram", "provider_user_id": "settings-missing-row-user"},
+        headers=_bot_headers(),
+    )
+    assert read_response.status_code == 200
+    assert read_response.json()["preferences"] == {
+        "notifications_enabled": True,
+        "device_status_enabled": True,
+        "defect_detected_enabled": True,
+    }
+
+    update_response = client.put(
+        f"/bot/v1/notifications/settings/stores/{store['store_id']}",
+        json={
+            "provider": "telegram",
+            "provider_user_id": "settings-missing-row-user",
+            "notifications_enabled": False,
+        },
+        headers=_bot_headers(),
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["preferences"]["notifications_enabled"] is False
+    assert (
+        _count_notification_preference_rows(
+            database_path,
+            user_id=user["user_id"],
+            store_id=store["store_id"],
+        )
+        == 1
+    )
 
 
 def test_defect_notifications_dedup_and_payload_shape(client_and_paths):

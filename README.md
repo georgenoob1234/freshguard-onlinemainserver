@@ -333,7 +333,57 @@ OMS now initializes these tables at startup in `app/db.py`:
 
 ## Notification preferences (bot API)
 
-Preferences are per-user per-store and are evaluated together with permissions:
+Preferences are per-user per-store and are evaluated together with permissions.
+
+Per-store settings flow endpoints:
+
+- `GET /bot/v1/notifications/settings/stores`
+  - returns stores eligible for notification settings picker
+  - filters out inactive/inaccessible stores and stores where role lacks `notifications.access`
+  - returns `{"items":[]}` when no stores are eligible (not an error)
+- `GET /bot/v1/notifications/settings/stores/{store_id}`
+  - returns selected store notification settings view (`preferences` + `capabilities`)
+  - re-checks membership/store availability/permissions on every request
+- `PUT /bot/v1/notifications/settings/stores/{store_id}`
+  - applies partial updates to allowed toggles
+  - rejects disallowed subtype updates with `403 {"detail":"notification_option_not_available"}`
+  - re-checks access fresh; stale/inaccessible stores return `404 {"detail":"store_not_available"}`
+
+Selected store settings response shape:
+
+```json
+{
+  "store_id": "store-1",
+  "store_name": "Main Store",
+  "preferences": {
+    "notifications_enabled": true,
+    "device_status_enabled": true,
+    "defect_detected_enabled": true
+  },
+  "capabilities": {
+    "can_access_notifications": true,
+    "can_subscribe_device_status": true,
+    "can_subscribe_defect_detected": true
+  }
+}
+```
+
+Capability semantics:
+
+- `can_access_notifications` requires current store access plus `notifications.access`.
+- Subtype capabilities require `can_access_notifications` and the matching subtype permission.
+- Stored preference values and capabilities are returned separately so tgbot does not need to recompute authorization logic.
+- OMS returns stored subtype values even when master toggle is off (bot may hide subtype UI rows/buttons).
+
+Default row behavior (current repo behavior):
+
+- If `notification_preferences` row is missing for `(user_id, store_id)`, OMS currently treats defaults as:
+  - `notifications_enabled=true`
+  - `device_status_enabled=true`
+  - `defect_detected_enabled=true`
+- First successful update upserts the row.
+
+Legacy active-store compatibility endpoints remain available:
 
 - `GET /bot/v1/notifications/preferences`
 - `PUT /bot/v1/notifications/preferences`
@@ -343,25 +393,23 @@ Required auth:
 - Header: `Authorization: Bearer <TGBOT_SERVICE_TOKEN>`
 - Query/body actor fields: `provider=telegram`, `provider_user_id=<ID>`
 
-Example read:
+Example picker load:
 
 ```bash
-curl -sS "http://127.0.0.1:8000/bot/v1/notifications/preferences?provider=telegram&provider_user_id=<ID>" \
+curl -sS "http://127.0.0.1:8000/bot/v1/notifications/settings/stores?provider=telegram&provider_user_id=<ID>" \
   -H "Authorization: Bearer ${TGBOT_SERVICE_TOKEN}"
 ```
 
-Example update:
+Example selected-store update:
 
 ```bash
-curl -sS -X PUT "http://127.0.0.1:8000/bot/v1/notifications/preferences" \
+curl -sS -X PUT "http://127.0.0.1:8000/bot/v1/notifications/settings/stores/<STORE_ID>" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${TGBOT_SERVICE_TOKEN}" \
   -d '{
     "provider": "telegram",
     "provider_user_id": "<ID>",
-    "notifications_enabled": true,
-    "device_status_enabled": true,
-    "defect_detected_enabled": true
+    "notifications_enabled": false
   }'
 ```
 
