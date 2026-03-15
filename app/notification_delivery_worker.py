@@ -59,6 +59,7 @@ class NotificationDeliveryWorker:
         self._enabled = enabled
         self._attempts_by_delivery: dict[str, int] = {}
         self._max_attempts = 3
+        self._missing_push_base_url_reported = False
 
     def _push_url(self) -> str:
         return f"{self._push_base_url}{self._push_endpoint_path}"
@@ -201,6 +202,7 @@ class NotificationDeliveryWorker:
                 delivery_id,
             ),
         )
+        logger.info("notification_delivery_sent delivery_id=%s", delivery_id)
         self._finalize_attempt_tracking(delivery_id)
 
     def _mark_delivery_retry_or_failed(
@@ -229,6 +231,11 @@ class NotificationDeliveryWorker:
                     delivery_id,
                 ),
             )
+            logger.warning(
+                "notification_delivery_retry_scheduled delivery_id=%s failure_reason=%s",
+                delivery_id,
+                normalized_reason,
+            )
             return
 
         connection.execute(
@@ -246,6 +253,11 @@ class NotificationDeliveryWorker:
                 now,
                 delivery_id,
             ),
+        )
+        logger.error(
+            "notification_delivery_failed delivery_id=%s failure_reason=%s",
+            delivery_id,
+            normalized_reason,
         )
         self._finalize_attempt_tracking(delivery_id)
 
@@ -314,7 +326,14 @@ class NotificationDeliveryWorker:
         if not self._enabled:
             return 0
         if not self._push_base_url:
+            if not self._missing_push_base_url_reported:
+                logger.error(
+                    "Notification delivery worker is enabled but NOTIFICATION_PUSH_BASE_URL is empty; OMS cannot dispatch notifications to tgbot."
+                )
+                self._missing_push_base_url_reported = True
             return 0
+
+        self._missing_push_base_url_reported = False
 
         connection = open_connection(self._database_path)
         try:
@@ -344,6 +363,11 @@ class NotificationDeliveryWorker:
                 deliveries=deliveries,
             )
         except httpx.TimeoutException:
+            logger.exception(
+                "notification_push_transport_timeout batch_id=%s delivery_count=%s",
+                batch_id,
+                len(deliveries),
+            )
             connection.execute("BEGIN IMMEDIATE")
             self._handle_transport_failure(
                 connection,
@@ -354,6 +378,11 @@ class NotificationDeliveryWorker:
             connection.close()
             return len(deliveries)
         except Exception:
+            logger.exception(
+                "notification_push_transport_error batch_id=%s delivery_count=%s",
+                batch_id,
+                len(deliveries),
+            )
             connection.execute("BEGIN IMMEDIATE")
             self._handle_transport_failure(
                 connection,

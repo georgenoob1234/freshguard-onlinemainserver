@@ -137,7 +137,10 @@ def get_settings() -> Settings:
             "ANNOTATED_IMAGE_CACHE_TTL_SECONDS",
             43200,
         ),
-        notification_push_base_url=os.getenv("NOTIFICATION_PUSH_BASE_URL", "").strip(),
+        notification_push_base_url=os.getenv(
+            "NOTIFICATION_PUSH_BASE_URL",
+            "http://127.0.0.1:8081",
+        ).strip(),
         notification_push_endpoint_path=os.getenv(
             "NOTIFICATION_PUSH_ENDPOINT_PATH",
             "/internal/notifications/push",
