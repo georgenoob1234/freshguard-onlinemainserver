@@ -14,6 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application
 COPY app/ ./app/
 COPY config/ ./config/
+COPY static/ ./static/
+COPY templates/ ./templates/
 
 # Ensure data dir exists and is writable
 RUN mkdir -p /app/data/blobs && chown -R appuser:appgroup /app
