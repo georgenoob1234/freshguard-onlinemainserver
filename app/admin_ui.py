@@ -271,10 +271,11 @@ def create_store_submit(
     request: Request,
     display_name: str = Form(default=""),
     address: str = Form(default=""),
-    is_active: bool = Form(default=True),
+    is_active_on: str | None = Form(default=None),
     _: str = Depends(require_admin_session),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> RedirectResponse:
+    is_active = is_active_on == "true"
     payload = AdminCreateStoreRequest(
         display_name=display_name,
         address=address,
@@ -320,7 +321,7 @@ def update_store_submit(
     request: Request,
     display_name: str = Form(default=""),
     address: str = Form(default=""),
-    is_active: bool = Form(default=True),
+    is_active_on: str | None = Form(default=None),
     confirm: str = Form(default=""),
     _: str = Depends(require_admin_session),
     connection: sqlite3.Connection = Depends(get_db),
@@ -329,6 +330,7 @@ def update_store_submit(
     t = make_translate_for(locale)
     if confirm != "yes":
         return _redirect(f"/admin/stores/{store_id}", {"error": t("error_confirm_store_update")})
+    is_active = is_active_on == "true"
     payload = AdminUpdateStoreRequest(
         display_name=display_name,
         address=address,
