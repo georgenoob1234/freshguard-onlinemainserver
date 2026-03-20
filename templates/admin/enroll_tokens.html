@@ -1,0 +1,116 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header">
+  <h1 class="page-header__title">{{ t('nav_enroll_tokens') }}</h1>
+  <p class="page-header__subtitle">{{ t('page_title_enroll_tokens') }}</p>
+</div>
+
+<div class="card mb-6">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('mint_token_title') }}</h2>
+  </div>
+  <div class="card__body">
+    <form method="post" action="/admin/enroll-tokens">
+      <div class="form-group">
+        <label class="form-label" for="store_id">{{ t('label_store') }}</label>
+        <select class="form-select" id="store_id" name="store_id" required>
+          <option value="">{{ t('select_store_placeholder') }}</option>
+          {% for store in stores %}
+          <option value="{{ store.store_id }}">{{ store.display_name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="expires_in_sec">
+          {{ t('label_expires_sec') }}
+          <span class="form-label__hint">(600 = 10 {{ t('label_expires_sec').split(' ')[-1] }})</span>
+        </label>
+        <input class="form-input" type="number" id="expires_in_sec" name="expires_in_sec" value="600" min="1" required>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="max_uses">{{ t('label_max_uses') }}</label>
+        <input class="form-input" type="number" id="max_uses" name="max_uses" value="1" min="1" required>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="note">
+          {{ t('label_note') }}
+          <span class="form-label__hint">— {{ t('placeholder_note_optional') }}</span>
+        </label>
+        <input class="form-input" type="text" id="note" name="note" value="">
+      </div>
+
+      <label class="form-checkbox">
+        <input type="checkbox" name="confirm" value="yes" required>
+        <span>{{ t('confirm_token_minting') }}</span>
+      </label>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary">{{ t('button_mint_token') }}</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% if created_token %}
+<div class="card" style="border-color: var(--color-primary);">
+  <div class="card__header" style="background: var(--color-primary-light); border-color: rgb(37 99 235 / 0.2);">
+    <h2 class="card__title" style="color: var(--color-primary);">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; margin-right: 0.5rem;"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+      {{ t('created_token_title') }}
+    </h2>
+  </div>
+  <div class="card__body">
+    <p class="flash flash--warning" style="margin-bottom: 1rem;">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
+      {{ t('copy_now_message') }}
+    </p>
+
+    <div class="token-display" id="token-display">
+      {{ created_token.enroll_token }}
+      <div class="token-display__actions">
+        <button type="button" class="btn btn--sm btn--secondary" id="copy-btn" onclick="copyToken()">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; margin-right: 0.25rem;"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+          <span id="copy-text">{{ t('button_copy_token') }}</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="kv-list" style="margin-top: 1.5rem;">
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_token_id') }}</span>
+        <span class="kv-item__value"><code>{{ created_token.token_id }}</code></span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_expires_at') }}</span>
+        <span class="kv-item__value">{{ created_token.expires_at }}</span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_max_uses_short') }}</span>
+        <span class="kv-item__value">{{ created_token.max_uses }}</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function copyToken() {
+  const tokenText = document.getElementById('token-display').childNodes[0].textContent.trim();
+  const btn = document.getElementById('copy-btn');
+  const text = document.getElementById('copy-text');
+  navigator.clipboard.writeText(tokenText).then(function() {
+    text.textContent = '{{ t('copy_success') }}';
+    btn.classList.remove('btn--secondary');
+    btn.classList.add('btn--primary');
+    setTimeout(function() {
+      text.textContent = '{{ t('button_copy_token') }}';
+      btn.classList.remove('btn--primary');
+      btn.classList.add('btn--secondary');
+    }, 2000);
+  });
+}
+</script>
+{% endif %}
+{% endblock %}

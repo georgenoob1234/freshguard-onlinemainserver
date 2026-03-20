@@ -1,0 +1,87 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header">
+  <h1 class="page-header__title">{{ t('page_title_device_detail', device_id=detail.device_id[:8]) }}</h1>
+  <p class="page-header__subtitle">
+    <code>{{ detail.device_id }}</code>
+  </p>
+</div>
+
+<div class="card mb-6">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('section_device_info') }}</h2>
+  </div>
+  <div class="card__body">
+    <div class="kv-list">
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_device_id') }}</span>
+        <span class="kv-item__value"><code>{{ detail.device_id }}</code></span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_device_store') }}</span>
+        <span class="kv-item__value">
+          {% if detail.store_id %}
+          <a href="/admin/stores/{{ detail.store_id }}">{{ detail.store_display_name }}</a>
+          {% else %}
+          <span class="text-muted">—</span>
+          {% endif %}
+        </span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('table_display_name') }}</span>
+        <span class="kv-item__value">{{ detail.label or t('value_none') }}</span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">Hostname</span>
+        <span class="kv-item__value">{{ detail.hostname or t('value_none') }}</span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">OS</span>
+        <span class="kv-item__value">{{ detail.os or t('value_none') }}</span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">Connector</span>
+        <span class="kv-item__value">{{ detail.connector_version or t('value_none') }}</span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_enrolled_at') }}</span>
+        <span class="kv-item__value">{{ detail.created_at or t('value_none') }}</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card__header">
+    <h2 class="card__title">Status</h2>
+  </div>
+  <div class="card__body">
+    <div class="kv-list">
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_device_connected') }}</span>
+        <span class="kv-item__value">
+          {% if detail.status.connected %}
+            <span class="badge badge--connected">{{ t('status_connected') }}</span>
+          {% else %}
+            <span class="badge badge--disconnected">{{ t('status_disconnected') }}</span>
+          {% endif %}
+        </span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_device_online') }}</span>
+        <span class="kv-item__value">
+          {% if detail.status.online %}
+            <span class="badge badge--online">{{ t('status_online') }}</span>
+          {% else %}
+            <span class="badge badge--offline">{{ t('status_offline') }}</span>
+          {% endif %}
+        </span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_device_last_seen') }}</span>
+        <span class="kv-item__value">{{ detail.status.last_seen_at or t('value_none') }}</span>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

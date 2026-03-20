@@ -3,11 +3,18 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager, suppress
 import logging
+import os
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
 
+from app.admin_auth import bootstrap_admin_account_if_needed
+from app.admin_i18n import router as admin_i18n_router
+from app.admin_ui import router as admin_ui_router
 from app.api.admin import router as admin_router
 from app.api.bot import router as bot_router
 from app.blob_cleanup import run_blob_cleanup_loop
@@ -26,11 +33,25 @@ from app.roles import load_roles_config
 logger = logging.getLogger(__name__)
 
 
+def _is_production_runtime() -> bool:
+    runtime_environment = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "")).strip().lower()
+    return runtime_environment in {"prod", "production"}
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings = get_settings()
     load_roles_config(settings.roles_config_path)
     init_db(settings.database_path)
+    bootstrap_status = bootstrap_admin_account_if_needed(
+        database_path=settings.database_path,
+        username=settings.admin_bootstrap_username,
+        password=settings.admin_bootstrap_password,
+    )
+    if bootstrap_status == "missing_bootstrap_credentials":
+        logger.warning(
+            "No admin bootstrap credentials configured; /admin UI login is unavailable until set."
+        )
     cleanup_task = asyncio.create_task(
         run_blob_cleanup_loop(
             database_path=settings.database_path,
@@ -77,6 +98,17 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="OnlineMainServer", lifespan=lifespan)
+session_secret = os.getenv("OMS_ADMIN_SESSION_SECRET", "").strip() or "dev-admin-session-secret"
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=session_secret,
+    session_cookie="oms_admin_session",
+    same_site="lax",
+    https_only=_is_production_runtime(),
+)
+app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent.parent / "static")), name="static")
+app.include_router(admin_ui_router)
+app.include_router(admin_i18n_router)
 app.include_router(admin_router)
 app.include_router(bot_router)
 app.include_router(connector_router)

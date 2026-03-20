@@ -6,6 +6,7 @@ Set these before starting the app:
 
 - `ADMIN_KEY` (required; OMS fails to start if missing)
 - `SECRET_SALT` (required, used for `SHA-256(token + SECRET_SALT)`)
+- `OMS_ADMIN_SESSION_SECRET` (required in production for browser admin sessions)
 - `TGBOT_SERVICE_TOKEN` (required in production for `/bot/v1/*` service auth)
 - `DATABASE_PATH` (optional, default: `./data/onlinemainserver.db`)
 - `ROLES_CONFIG_PATH` (optional, default: `./config/roles.json`)
@@ -26,12 +27,15 @@ Set these before starting the app:
 - `NOTIFICATION_PUSH_TIMEOUT_SECONDS` (optional, default: `10`)
 - `NOTIFICATION_PUSH_POLL_INTERVAL_SECONDS` (optional, default: `2`)
 - `NOTIFICATION_STATUS_POLL_INTERVAL_SECONDS` (optional, default: `2`)
+- `OMS_ADMIN_BOOTSTRAP_USERNAME` (optional; when set with password and no admin exists, creates initial admin account)
+- `OMS_ADMIN_BOOTSTRAP_PASSWORD` (optional; used with `OMS_ADMIN_BOOTSTRAP_USERNAME`)
 
 Example:
 
 ```bash
 export ADMIN_KEY="change-me-admin-key"
 export SECRET_SALT="change-me-long-random-salt"
+export OMS_ADMIN_SESSION_SECRET="change-me-admin-session-secret"
 export TGBOT_SERVICE_TOKEN="change-me-bot-service-token"
 export DATABASE_PATH="./data/onlinemainserver.db"
 export ROLES_CONFIG_PATH="./config/roles.json"
@@ -52,6 +56,8 @@ export NOTIFICATION_PUSH_ENDPOINT_PATH="/internal/notifications/push"
 export NOTIFICATION_PUSH_TIMEOUT_SECONDS="10"
 export NOTIFICATION_PUSH_POLL_INTERVAL_SECONDS="2"
 export NOTIFICATION_STATUS_POLL_INTERVAL_SECONDS="2"
+export OMS_ADMIN_BOOTSTRAP_USERNAME="superadmin"
+export OMS_ADMIN_BOOTSTRAP_PASSWORD="change-me-admin-password"
 ```
 
 ## Run
@@ -60,6 +66,12 @@ export NOTIFICATION_STATUS_POLL_INTERVAL_SECONDS="2"
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
+
+## Admin interfaces
+
+- Machine/admin automation API remains at `/admin/v1/*` and uses `X-ADMIN-KEY`.
+- Human browser UI is served by OMS at `/admin/*` and uses session login.
+- Browser clients must not use `X-ADMIN-KEY`, `SECRET_SALT`, or other machine secrets.
 
 ## Docker
 

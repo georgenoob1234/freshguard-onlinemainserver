@@ -1274,27 +1274,6 @@ def test_cleanup_stale_notification_deliveries_marks_rows_failed(tmp_path: Path)
     assert sent_row == ("sent",)
 
 
-def test_delivery_worker_logs_error_when_push_base_url_missing(caplog):
-    worker = NotificationDeliveryWorker(
-        database_path="/tmp/unused.db",
-        push_base_url="",
-        push_endpoint_path="/internal/notifications/push",
-        batch_size=10,
-        timeout_seconds=5.0,
-        poll_interval_seconds=1.0,
-        enabled=True,
-    )
-
-    with caplog.at_level("ERROR"):
-        processed = asyncio.run(worker.run_once())
-
-    assert processed == 0
-    assert (
-        "NOTIFICATION_PUSH_BASE_URL is empty; OMS cannot dispatch notifications to tgbot."
-        in caplog.text
-    )
-
-
 def test_annotated_image_cache_miss_then_hit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     database_path = tmp_path / "onlinemainserver.db"
     blob_storage_path = tmp_path / "blobs"

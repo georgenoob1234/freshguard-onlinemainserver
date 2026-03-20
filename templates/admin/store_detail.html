@@ -1,0 +1,211 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header">
+  <h1 class="page-header__title">{{ detail.store.display_name }}</h1>
+  <p class="page-header__subtitle">
+    <span class="text-secondary">{{ t('label_store_id') }}</span> <code>{{ detail.store.store_id }}</code>
+    ·
+    {% if detail.store.is_active %}
+      <span class="badge badge--active">{{ t('status_active_short') }}</span>
+    {% else %}
+      <span class="badge badge--inactive">{{ t('status_inactive') }}</span>
+    {% endif %}
+  </p>
+</div>
+
+<div class="card mb-6">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('section_store_summary') }}</h2>
+  </div>
+  <div class="card__body">
+    <div class="kv-list">
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_store_id') }}</span>
+        <span class="kv-item__value"><code>{{ detail.store.store_id }}</code></span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_store_status') }}</span>
+        <span class="kv-item__value">
+          {% if detail.store.is_active %}
+            <span class="badge badge--active">{{ t('value_yes') }}</span>
+          {% else %}
+            <span class="badge badge--inactive">{{ t('value_no') }}</span>
+          {% endif %}
+        </span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_address') }}</span>
+        <span class="kv-item__value">{{ detail.store.address or t('value_none') }}</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-6">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('section_edit_store') }}</h2>
+  </div>
+  <div class="card__body">
+    <form method="post" action="/admin/stores/{{ detail.store.store_id }}/update">
+      <div class="form-group">
+        <label class="form-label" for="display_name">{{ t('label_display_name') }}</label>
+        <input class="form-input" type="text" id="display_name" name="display_name" value="{{ detail.store.display_name }}" required>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="address">{{ t('label_address') }}</label>
+        <input class="form-input" type="text" id="address" name="address" value="{{ detail.store.address or '' }}">
+      </div>
+
+      <label class="form-checkbox">
+        <input type="checkbox" name="is_active" value="true" {% if detail.store.is_active %}checked{% endif %}>
+        <span>{{ t('checkbox_is_active') }}</span>
+      </label>
+
+      <label class="form-checkbox">
+        <input type="checkbox" name="confirm" value="yes" required>
+        <span>{{ t('confirm_store_update') }}</span>
+      </label>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary">{{ t('button_update') }}</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card mb-6">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('section_members') }}</h2>
+  </div>
+  <div class="card__body card__body--no-padding">
+    <div class="table-container">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>{{ t('table_user') }}</th>
+            <th>{{ t('table_role') }}</th>
+            <th>{{ t('table_banned') }}</th>
+            <th>{{ t('label_created') }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for member in detail.members %}
+          <tr>
+            <td>
+              <a href="/admin/users/{{ member.user_id }}">{{ member.display_name or member.username or member.user_id[:8] }}</a>
+            </td>
+            <td>{{ member.role }}</td>
+            <td>
+              {% if member.is_banned %}
+                <span class="badge badge--banned">{{ t('value_yes') }}</span>
+              {% else %}
+                <span class="badge badge--active">{{ t('value_no') }}</span>
+              {% endif %}
+            </td>
+            <td>{{ member.created_at }}</td>
+          </tr>
+          {% endfor %}
+          {% if not detail.members %}
+          <tr>
+            <td colspan="4">
+              <div class="empty-state">
+                <svg class="empty-state__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                <div class="empty-state__title">{{ t('empty_no_members') }}</div>
+              </div>
+            </td>
+          </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-6">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('add_or_update_member') }}</h2>
+  </div>
+  <div class="card__body">
+    <form method="post" action="/admin/stores/{{ detail.store.store_id }}/memberships">
+      <div class="form-group">
+        <label class="form-label" for="user_id">{{ t('table_user_id_short') }}</label>
+        <input class="form-input" type="text" id="user_id" name="user_id" required placeholder="{{ t('select_user_placeholder') }}">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="role">{{ t('label_role') }}</label>
+        <input class="form-input" type="text" id="role" name="role" required>
+      </div>
+
+      <label class="form-checkbox">
+        <input type="checkbox" name="set_active_store" value="true">
+        <span>{{ t('checkbox_set_active_store') }}</span>
+      </label>
+
+      <label class="form-checkbox">
+        <input type="checkbox" name="confirm" value="yes" required>
+        <span>{{ t('confirm_membership_change') }}</span>
+      </label>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary">{{ t('button_save_membership') }}</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('section_store_devices') }}</h2>
+  </div>
+  <div class="card__body card__body--no-padding">
+    <div class="table-container">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>{{ t('table_device_id') }}</th>
+            <th>{{ t('table_connected') }}</th>
+            <th>{{ t('table_online') }}</th>
+            <th>{{ t('table_last_seen') }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for device in detail.devices %}
+          <tr>
+            <td>
+              <a href="/admin/devices/{{ device.device_id }}" class="text-secondary">{{ device.device_id[:8] }}...</a>
+            </td>
+            <td>
+              {% if device.connected %}
+                <span class="badge badge--connected">{{ t('status_connected') }}</span>
+              {% else %}
+                <span class="badge badge--disconnected">{{ t('status_disconnected') }}</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if device.online %}
+                <span class="badge badge--online">{{ t('status_online') }}</span>
+              {% else %}
+                <span class="badge badge--offline">{{ t('status_offline') }}</span>
+              {% endif %}
+            </td>
+            <td>{{ device.last_seen_at or t('value_none') }}</td>
+          </tr>
+          {% endfor %}
+          {% if not detail.devices %}
+          <tr>
+            <td colspan="4">
+              <div class="empty-state">
+                <svg class="empty-state__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+                <div class="empty-state__title">{{ t('empty_no_devices') }}</div>
+              </div>
+            </td>
+          </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

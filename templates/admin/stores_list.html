@@ -1,0 +1,94 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header">
+  <h1 class="page-header__title">{{ t('nav_stores') }}</h1>
+  <p class="page-header__subtitle">{{ t('page_title_stores') }}</p>
+</div>
+
+<div class="card mb-6">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('create_store_title') }}</h2>
+  </div>
+  <div class="card__body">
+    <form method="post" action="/admin/stores">
+      <div class="form-group">
+        <label class="form-label" for="display_name">{{ t('label_display_name') }}</label>
+        <input class="form-input" type="text" id="display_name" name="display_name" required>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="address">{{ t('label_address') }}</label>
+        <input class="form-input" type="text" id="address" name="address">
+      </div>
+
+      <label class="form-checkbox">
+        <input type="checkbox" name="is_active" value="true" checked>
+        <span>{{ t('checkbox_is_active') }}</span>
+      </label>
+
+      <div class="form-actions" style="border-top: none; margin-top: 1rem; padding-top: 0;">
+        <button type="submit" class="btn btn--primary">{{ t('button_create') }}</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('nav_stores') }}</h2>
+    <div class="toolbar mb-0">
+      <form method="get" action="/admin/stores" class="toolbar__filters">
+        <label class="form-checkbox">
+          <input type="checkbox" name="include_inactive" value="true" {% if include_inactive %}checked{% endif %}>
+          <span>{{ t('filter_include_inactive') }}</span>
+        </label>
+        <button type="submit" class="btn btn--secondary btn--sm">{{ t('search_button') }}</button>
+      </form>
+    </div>
+  </div>
+  <div class="card__body card__body--no-padding">
+    <div class="table-container">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>{{ t('table_store_name') }}</th>
+            <th>{{ t('table_status') }}</th>
+            <th>{{ t('section_members') }}</th>
+            <th>{{ t('section_store_devices') }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for store in stores %}
+          <tr>
+            <td>
+              <a href="/admin/stores/{{ store.store_id }}" class="text-secondary">{{ store.store_id[:8] }}...</a>
+            </td>
+            <td>{{ store.display_name }}</td>
+            <td>
+              {% if store.is_active %}
+                <span class="badge badge--active">{{ t('status_active_short') }}</span>
+              {% else %}
+                <span class="badge badge--inactive">{{ t('status_inactive') }}</span>
+              {% endif %}
+            </td>
+            <td>{{ store.member_count }}</td>
+            <td>{{ store.device_count }}</td>
+          </tr>
+          {% endfor %}
+          {% if not stores %}
+          <tr>
+            <td colspan="5">
+              <div class="empty-state">
+                <svg class="empty-state__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                <div class="empty-state__title">{{ t('empty_no_stores') }}</div>
+              </div>
+            </td>
+          </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

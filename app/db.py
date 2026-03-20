@@ -178,6 +178,25 @@ def _migrate_users_columns(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_admin_accounts_columns(connection: sqlite3.Connection) -> None:
+    columns = _get_table_columns(connection, "admin_accounts")
+    if not columns:
+        return
+
+    if "updated_at" not in columns:
+        connection.execute("ALTER TABLE admin_accounts ADD COLUMN updated_at TEXT NULL")
+
+    refreshed_columns = _get_table_columns(connection, "admin_accounts")
+    if "updated_at" in refreshed_columns:
+        connection.execute(
+            """
+            UPDATE admin_accounts
+            SET updated_at = COALESCE(updated_at, created_at)
+            WHERE updated_at IS NULL
+            """
+        )
+
+
 def init_db(database_path: str) -> None:
     connection = open_connection(database_path)
     try:
@@ -273,6 +292,14 @@ def init_db(database_path: str) -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS admin_accounts (
+                admin_id TEXT PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NULL
             );
 
             CREATE TABLE IF NOT EXISTS user_identities (
@@ -442,6 +469,7 @@ def init_db(database_path: str) -> None:
         _migrate_devices_presence_columns(connection)
         _migrate_stores_columns(connection)
         _migrate_users_columns(connection)
+        _migrate_admin_accounts_columns(connection)
         connection.commit()
     finally:
         connection.close()

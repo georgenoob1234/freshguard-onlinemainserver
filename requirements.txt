@@ -4,3 +4,5 @@ pytest
 httpx
 python-multipart
 Pillow
+jinja2
+argon2-cffi

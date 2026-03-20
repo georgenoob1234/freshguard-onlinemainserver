@@ -8,6 +8,9 @@ import os
 class Settings:
     admin_key: str
     secret_salt: str
+    admin_session_secret: str
+    admin_bootstrap_username: str
+    admin_bootstrap_password: str
     tgbot_service_token: str
     database_path: str
     roles_config_path: str
@@ -88,10 +91,16 @@ def get_settings() -> Settings:
     tgbot_service_token = os.getenv("TGBOT_SERVICE_TOKEN", "")
     if runtime_environment in {"prod", "production"} and not tgbot_service_token:
         raise RuntimeError("TGBOT_SERVICE_TOKEN environment variable is required in production")
+    admin_session_secret = os.getenv("OMS_ADMIN_SESSION_SECRET", "").strip()
+    if runtime_environment in {"prod", "production"} and not admin_session_secret:
+        raise RuntimeError("OMS_ADMIN_SESSION_SECRET environment variable is required in production")
 
     return Settings(
         admin_key=admin_key,
         secret_salt=secret_salt,
+        admin_session_secret=admin_session_secret,
+        admin_bootstrap_username=os.getenv("OMS_ADMIN_BOOTSTRAP_USERNAME", "").strip(),
+        admin_bootstrap_password=os.getenv("OMS_ADMIN_BOOTSTRAP_PASSWORD", ""),
         tgbot_service_token=tgbot_service_token,
         database_path=os.getenv("DATABASE_PATH", "./data/onlinemainserver.db"),
         roles_config_path=os.getenv("ROLES_CONFIG_PATH", "./config/roles.json"),
@@ -137,10 +146,7 @@ def get_settings() -> Settings:
             "ANNOTATED_IMAGE_CACHE_TTL_SECONDS",
             43200,
         ),
-        notification_push_base_url=os.getenv(
-            "NOTIFICATION_PUSH_BASE_URL",
-            "http://127.0.0.1:8081",
-        ).strip(),
+        notification_push_base_url=os.getenv("NOTIFICATION_PUSH_BASE_URL", "").strip(),
         notification_push_endpoint_path=os.getenv(
             "NOTIFICATION_PUSH_ENDPOINT_PATH",
             "/internal/notifications/push",

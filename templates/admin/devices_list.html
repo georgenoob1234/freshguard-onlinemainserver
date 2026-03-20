@@ -1,0 +1,88 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header">
+  <h1 class="page-header__title">{{ t('nav_devices') }}</h1>
+  <p class="page-header__subtitle">{{ t('page_title_devices') }}</p>
+</div>
+
+<div class="card mb-6">
+  <div class="card__body">
+    <form method="get" action="/admin/devices" class="toolbar mb-0">
+      <div class="toolbar__filters">
+        <label class="form-label mb-0" for="store_id">{{ t('filter_by_store') }}</label>
+        <select class="form-select" id="store_id" name="store_id" style="min-width: 200px;">
+          <option value="">{{ t('filter_store_placeholder') }}</option>
+          {% for store in stores %}
+          <option value="{{ store.store_id }}" {% if store_id == store.store_id %}selected{% endif %}>
+            {{ store.display_name }}
+          </option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="btn btn--secondary">{{ t('apply_filter') }}</button>
+        {% if store_id %}
+        <a href="/admin/devices" class="btn btn--ghost">{{ t('clear_filter') }}</a>
+        {% endif %}
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card__body card__body--no-padding">
+    <div class="table-container">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>{{ t('table_device_id') }}</th>
+            <th>{{ t('table_store') }}</th>
+            <th>{{ t('table_connected') }}</th>
+            <th>{{ t('table_online') }}</th>
+            <th>{{ t('table_last_seen') }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for device in devices %}
+          <tr>
+            <td>
+              <a href="/admin/devices/{{ device.device_id }}" class="text-secondary">{{ device.device_id[:8] }}...</a>
+            </td>
+            <td>
+              {% if device.store_id %}
+              <a href="/admin/stores/{{ device.store_id }}">{{ device.store_display_name }}</a>
+              {% else %}
+              <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if device.connected %}
+                <span class="badge badge--connected">{{ t('value_yes') }}</span>
+              {% else %}
+                <span class="badge badge--disconnected">{{ t('value_no') }}</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if device.online %}
+                <span class="badge badge--online">{{ t('value_yes') }}</span>
+              {% else %}
+                <span class="badge badge--offline">{{ t('value_no') }}</span>
+              {% endif %}
+            </td>
+            <td>{{ device.last_seen_at or t('value_none') }}</td>
+          </tr>
+          {% endfor %}
+          {% if not devices %}
+          <tr>
+            <td colspan="5">
+              <div class="empty-state">
+                <svg class="empty-state__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+                <div class="empty-state__title">{{ t('empty_no_devices_global') }}</div>
+              </div>
+            </td>
+          </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

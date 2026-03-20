@@ -1,0 +1,203 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header">
+  <h1 class="page-header__title">{{ t('page_title_user_detail', user_id=detail.user.user_id) }}</h1>
+  <p class="page-header__subtitle">
+    {% if detail.user.is_banned %}
+      <span class="badge badge--banned">{{ t('status_banned') }}</span>
+    {% else %}
+      <span class="badge badge--active">{{ t('status_active') }}</span>
+    {% endif %}
+  </p>
+</div>
+
+<div class="card mb-6">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('section_identity') }}</h2>
+  </div>
+  <div class="card__body">
+    <div class="kv-list">
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_banned') }}</span>
+        <span class="kv-item__value">
+          {% if detail.user.is_banned %}
+            <span class="badge badge--banned">{{ t('value_banned_yes') }}</span>
+          {% else %}
+            <span class="badge badge--active">{{ t('value_banned_no') }}</span>
+          {% endif %}
+        </span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_ban_reason') }}</span>
+        <span class="kv-item__value">{{ detail.user.ban_reason or t('value_none') }}</span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_created') }}</span>
+        <span class="kv-item__value">{{ detail.user.created_at }}</span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_last_seen') }}</span>
+        <span class="kv-item__value">{{ detail.user.last_seen_at }}</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-6">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('section_provider_identities') }}</h2>
+  </div>
+  <div class="card__body card__body--no-padding">
+    <div class="table-container">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>{{ t('table_provider') }}</th>
+            <th>{{ t('table_provider_user_id') }}</th>
+            <th>{{ t('table_provider_chat_id') }}</th>
+            <th>{{ t('table_username') }}</th>
+            <th>{{ t('table_display_name') }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for identity in detail.identities %}
+          <tr>
+            <td>{{ identity.provider }}</td>
+            <td>{{ identity.provider_user_id }}</td>
+            <td>{{ identity.provider_chat_id }}</td>
+            <td>{{ identity.username or '-' }}</td>
+            <td>{{ identity.display_name or '-' }}</td>
+          </tr>
+          {% endfor %}
+          {% if not detail.identities %}
+          <tr>
+            <td colspan="5">
+              <div class="empty-state">
+                <svg class="empty-state__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                <div class="empty-state__title">{{ t('empty_no_identities') }}</div>
+              </div>
+            </td>
+          </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="danger-zone mb-6">
+  <div class="danger-zone__title">
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
+    {{ t('section_ban_unban') }}
+  </div>
+  <form method="post" action="/admin/users/{{ detail.user.user_id }}/ban">
+    <div class="form-group">
+      <label class="form-label" for="is_banned">{{ t('form_set_banned_state') }}</label>
+      <select class="form-select" id="is_banned" name="is_banned">
+        <option value="false" {% if not detail.user.is_banned %}selected{% endif %}>{{ t('option_not_banned') }}</option>
+        <option value="true" {% if detail.user.is_banned %}selected{% endif %}>{{ t('option_banned') }}</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="reason">{{ t('label_reason') }}</label>
+      <input class="form-input" type="text" id="reason" name="reason" value="{{ detail.user.ban_reason or '' }}">
+    </div>
+
+    <label class="form-checkbox">
+      <input type="checkbox" name="confirm" value="yes" required>
+      <span>{{ t('confirm_ban_state_change') }}</span>
+    </label>
+
+    <div class="form-actions" style="border-color: rgb(220 38 38 / 0.2);">
+      <button type="submit" class="btn btn--danger">{{ t('button_apply_ban_state') }}</button>
+    </div>
+  </form>
+</div>
+
+<div class="card mb-6">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('section_memberships') }}</h2>
+  </div>
+  <div class="card__body card__body--no-padding">
+    <div class="table-container">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>{{ t('table_store') }}</th>
+            <th>{{ t('table_role') }}</th>
+            <th>{{ t('table_store_active') }}</th>
+            <th>{{ t('label_created') }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for membership in detail.memberships %}
+          <tr>
+            <td>
+              <a href="/admin/stores/{{ membership.store_id }}">{{ membership.store_display_name }}</a>
+            </td>
+            <td>{{ membership.role }}</td>
+            <td>
+              {% if membership.store_is_active %}
+                <span class="badge badge--active">{{ t('value_yes') }}</span>
+              {% else %}
+                <span class="badge badge--inactive">{{ t('value_no') }}</span>
+              {% endif %}
+            </td>
+            <td>{{ membership.created_at }}</td>
+          </tr>
+          {% endfor %}
+          {% if not detail.memberships %}
+          <tr>
+            <td colspan="4">
+              <div class="empty-state">
+                <svg class="empty-state__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                <div class="empty-state__title">{{ t('empty_no_memberships') }}</div>
+              </div>
+            </td>
+          </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('add_or_update_membership') }}</h2>
+  </div>
+  <div class="card__body">
+    <form method="post" action="/admin/users/{{ detail.user.user_id }}/memberships">
+      <div class="form-group">
+        <label class="form-label" for="store_id">{{ t('label_store') }}</label>
+        <select class="form-select" id="store_id" name="store_id" required>
+          <option value="">{{ t('select_store_placeholder') }}</option>
+          {% for store in stores %}
+          <option value="{{ store.store_id }}">{{ store.display_name }} ({{ store.store_id[:8] }}...)</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="role">{{ t('label_role') }}</label>
+        <input class="form-input" type="text" id="role" name="role" required>
+      </div>
+
+      <label class="form-checkbox">
+        <input type="checkbox" name="set_active_store" value="true">
+        <span>{{ t('checkbox_set_active_store') }}</span>
+      </label>
+
+      <label class="form-checkbox">
+        <input type="checkbox" name="confirm" value="yes" required>
+        <span>{{ t('confirm_role_assignment') }}</span>
+      </label>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary">{{ t('button_save_membership') }}</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

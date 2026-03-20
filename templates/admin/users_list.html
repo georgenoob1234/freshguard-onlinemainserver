@@ -1,0 +1,96 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header">
+  <h1 class="page-header__title">{{ t('nav_users') }}</h1>
+  <p class="page-header__subtitle">{{ t('page_title_users') }}</p>
+</div>
+
+<div class="card mb-4">
+  <div class="card__body">
+    <form method="get" action="/admin/users" class="toolbar mb-0">
+      <div class="toolbar__search">
+        <input class="form-input" type="text" name="q" placeholder="{{ t('search_placeholder') }}" value="{{ q }}">
+      </div>
+      <div class="toolbar__filters">
+        <label class="form-checkbox">
+          <input type="checkbox" name="banned_only" value="true" {% if banned_only %}checked{% endif %}>
+          <span>{{ t('filter_banned_only') }}</span>
+        </label>
+        <button type="submit" class="btn btn--secondary">{{ t('search_button') }}</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card__body card__body--no-padding">
+    <div class="table-container">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>{{ t('table_user_id') }}</th>
+            <th>{{ t('table_provider') }}</th>
+            <th>{{ t('table_provider_user_id') }}</th>
+            <th>{{ t('table_username') }}</th>
+            <th>{{ t('table_display_name') }}</th>
+            <th>{{ t('table_banned') }}</th>
+            <th>{{ t('table_actions') }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in result['items'] %}
+          <tr>
+            <td>
+              <a href="/admin/users/{{ item.user_id }}" class="text-secondary">{{ item.user_id[:8] }}...</a>
+            </td>
+            <td>{{ item.provider }}</td>
+            <td>{{ item.provider_user_id }}</td>
+            <td>{{ item.username or '-' }}</td>
+            <td>{{ item.display_name or '-' }}</td>
+            <td>
+              {% if item.is_banned %}
+                <span class="badge badge--banned">{{ t('status_banned') }}</span>
+              {% else %}
+                <span class="badge badge--active">{{ t('status_active') }}</span>
+              {% endif %}
+            </td>
+            <td>
+              <div class="table__actions">
+                <a class="btn btn--sm btn--secondary" href="/admin/users/{{ item.user_id }}">{{ t('action_view') }}</a>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+          {% if not result['items'] %}
+          <tr>
+            <td colspan="7">
+              <div class="empty-state">
+                <svg class="empty-state__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                <div class="empty-state__title">{{ t('empty_no_users') }}</div>
+              </div>
+            </td>
+          </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if result['items'] %}
+    <div class="pagination">
+      <div class="pagination__info">
+        {{ t('page_of', page=result.page, total=(result.total // 25) + (1 if result.total % 25 > 0 else 0)) }}
+        <span class="text-muted">· {{ result.total }} {{ t('stat_total_users') }}</span>
+      </div>
+      <div class="pagination__actions">
+        {% if result.has_prev %}
+        <a class="btn btn--secondary" href="/admin/users?q={{ q | urlencode }}&banned_only={% if banned_only %}true{% else %}false{% endif %}&page={{ result.page - 1 }}">{{ t('pagination_prev') }}</a>
+        {% endif %}
+        {% if result.has_next %}
+        <a class="btn btn--secondary" href="/admin/users?q={{ q | urlencode }}&banned_only={% if banned_only %}true{% else %}false{% endif %}&page={{ result.page + 1 }}">{{ t('pagination_next') }}</a>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

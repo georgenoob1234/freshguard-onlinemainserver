@@ -1,0 +1,53 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<div class="page-header">
+  <h1 class="page-header__title">{{ t('nav_dashboard') }}</h1>
+  <p class="page-header__subtitle">{{ t('page_title_dashboard') }}</p>
+</div>
+
+<section class="stats-grid">
+  <article class="stat-card">
+    <div class="stat-card__label">{{ t('stat_total_stores') }}</div>
+    <div class="stat-card__value">{{ counts.total_stores }}</div>
+    <a class="stat-card__link" href="/admin/stores">
+      {{ t('nav_stores') }} →
+    </a>
+  </article>
+
+  <article class="stat-card">
+    <div class="stat-card__label">{{ t('stat_total_users') }}</div>
+    <div class="stat-card__value">{{ counts.total_users }}</div>
+    <a class="stat-card__link" href="/admin/users">
+      {{ t('nav_users') }} →
+    </a>
+  </article>
+
+  <article class="stat-card">
+    <div class="stat-card__label">{{ t('stat_banned_users') }}</div>
+    <div class="stat-card__value">{{ counts.banned_users }}</div>
+  </article>
+
+  <article class="stat-card">
+    <div class="stat-card__label">{{ t('stat_total_memberships') }}</div>
+    <div class="stat-card__value">{{ counts.total_memberships }}</div>
+  </article>
+
+  <article class="stat-card">
+    <div class="stat-card__label">{{ t('stat_total_devices') }}</div>
+    <div class="stat-card__value">{{ counts.total_devices }}</div>
+    <a class="stat-card__link" href="/admin/devices">
+      {{ t('nav_devices') }} →
+    </a>
+  </article>
+
+  <article class="stat-card">
+    <div class="stat-card__label">{{ t('stat_connected_devices') }}</div>
+    <div class="stat-card__value">{{ connected_devices }}</div>
+  </article>
+
+  <article class="stat-card">
+    <div class="stat-card__label">{{ t('stat_online_devices') }}</div>
+    <div class="stat-card__value">{{ online_devices }}</div>
+  </article>
+</section>
+{% endblock %}

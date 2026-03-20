@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="{{ html_lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page_title }} — {{ t('app_title') }}</title>
+  <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+  {% if admin_username %}
+  <header class="admin-header">
+    <div class="admin-header__inner">
+      <a class="brand" href="/admin">
+        <span class="brand__icon">OMS</span>
+        <span>{{ t('app_title') }}</span>
+      </a>
+
+      <nav class="nav">
+        <a class="nav__link{% if request.url.path == '/admin' %} nav__link--active{% endif %}" href="/admin">
+          {{ t('nav_dashboard') }}
+        </a>
+        <a class="nav__link{% if '/admin/users' in request.url.path %} nav__link--active{% endif %}" href="/admin/users">
+          {{ t('nav_users') }}
+        </a>
+        <a class="nav__link{% if '/admin/stores' in request.url.path %} nav__link--active{% endif %}" href="/admin/stores">
+          {{ t('nav_stores') }}
+        </a>
+        <a class="nav__link{% if '/admin/devices' in request.url.path %} nav__link--active{% endif %}" href="/admin/devices">
+          {{ t('nav_devices') }}
+        </a>
+        <a class="nav__link{% if '/admin/enroll-tokens' in request.url.path %} nav__link--active{% endif %}" href="/admin/enroll-tokens">
+          {{ t('nav_enroll_tokens') }}
+        </a>
+      </nav>
+
+      <div class="header-actions">
+        <div class="lang-switch">
+          {% if locale == 'ru' %}
+            <span class="lang-switch__btn lang-switch__btn--active">RU</span>
+            <a class="lang-switch__btn" href="/admin/set-language?lang=en&next={{ request.url.path | urlencode }}">EN</a>
+          {% else %}
+            <a class="lang-switch__btn" href="/admin/set-language?lang=ru&next={{ request.url.path | urlencode }}">RU</a>
+            <span class="lang-switch__btn lang-switch__btn--active">EN</span>
+          {% endif %}
+        </div>
+        <form method="post" action="/admin/logout" class="logout-form">
+          <button type="submit" class="logout-btn">{{ t('logout') }} ({{ admin_username }})</button>
+        </form>
+      </div>
+    </div>
+  </header>
+  {% endif %}
+
+  <main class="admin-main">
+    {% if message %}
+    <div class="flash flash--success" role="alert">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+      {{ message }}
+    </div>
+    {% endif %}
+
+    {% if error %}
+    <div class="flash flash--error" role="alert">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" x2="9" y1="9" y2="15"/><line x1="9" x2="15" y1="9" y2="15"/></svg>
+      {{ error }}
+    </div>
+    {% endif %}
+
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
