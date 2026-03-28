@@ -15,6 +15,11 @@
       <h1 class="login-card__title">{{ t('login_heading') }}</h1>
       <p class="login-card__subtitle">{{ bootstrap_loading_message }}</p>
     </div>
+    <div class="form-actions" id="fallback-login-container" style="display: none; border-top: 1px solid var(--color-border); margin-top: 1rem; padding-top: 1rem;">
+      <a href="/admin/login" class="btn btn--secondary btn--lg" style="width: 100%;">
+        {{ t('button_go_to_admin_login') }}
+      </a>
+    </div>
   </div>
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -81,6 +86,13 @@
         window.location.replace(`/admin/login?error=${encodeURIComponent(errorMessage)}`);
       }
     }
+
+    setTimeout(() => {
+      const fallbackContainer = document.getElementById("fallback-login-container");
+      if (fallbackContainer) {
+        fallbackContainer.style.display = "flex";
+      }
+    }, 3000);
 
     bootstrapTelegramWebAppLogin();
   </script>
