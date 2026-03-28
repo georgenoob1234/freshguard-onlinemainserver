@@ -5,7 +5,9 @@ import sqlite3
 
 from fastapi import Depends, HTTPException, Request
 
-from app.admin_session import AdminPrincipal, get_admin_principal
+from app.admin_session import AdminPrincipal, get_admin_principal, get_admin_webapp_token
+from app.admin_telegram_auth import resolve_webapp_admin_token
+from app.config import get_settings
 from app.db import get_db
 from app.roles import is_permission_granted
 
@@ -96,7 +98,25 @@ def resolve_admin_actor(
     *,
     request: Request,
 ) -> AdminActor:
+    request.state.admin_webapp_auth_mode = False
     principal = get_admin_principal(request)
+    if principal is None:
+        webapp_token = get_admin_webapp_token(request)
+        if webapp_token is not None:
+            webapp_user = resolve_webapp_admin_token(
+                connection,
+                token=webapp_token,
+                secret_salt=get_settings().secret_salt,
+            )
+            if webapp_user is not None:
+                principal = AdminPrincipal(
+                    kind="oms_user",
+                    user_id=webapp_user.user_id,
+                    display_name=webapp_user.display_name,
+                    auth_method="telegram_webapp",
+                )
+                request.state.admin_webapp_auth_mode = True
+
     if principal is None:
         raise HTTPException(status_code=303, headers={"Location": "/admin/login"})
 

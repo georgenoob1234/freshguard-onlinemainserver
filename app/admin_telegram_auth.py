@@ -2,25 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import hashlib
-import hmac
-import json
 import secrets
 import sqlite3
-from urllib.parse import parse_qsl
 import uuid
 
 from fastapi import HTTPException
 
 from app.roles import is_permission_granted
 from app.security import hash_token
-
-
-@dataclass(frozen=True)
-class TelegramMiniAppIdentity:
-    provider_user_id: str
-    username: str | None
-    display_name: str | None
 
 
 @dataclass(frozen=True)
@@ -44,6 +33,12 @@ class CompletionTokenResult:
     display_name: str
 
 
+@dataclass(frozen=True)
+class WebAppTokenResult:
+    token: str
+    expires_at: str
+
+
 def _parse_iso_datetime(raw_value: str) -> datetime:
     parsed = datetime.fromisoformat(raw_value)
     if parsed.tzinfo is None:
@@ -53,71 +48,6 @@ def _parse_iso_datetime(raw_value: str) -> datetime:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def verify_telegram_webapp_init_data(
-    *,
-    init_data: str,
-    bot_token: str,
-    max_age_seconds: int,
-) -> TelegramMiniAppIdentity:
-    if not bot_token:
-        raise HTTPException(status_code=503, detail="telegram_auth_not_configured")
-
-    parsed_pairs = parse_qsl(init_data, keep_blank_values=True)
-    payload = dict(parsed_pairs)
-    raw_hash = payload.pop("hash", "").strip()
-    if not raw_hash:
-        raise HTTPException(status_code=400, detail="invalid_telegram_init_data")
-
-    data_check_string = "\n".join(
-        f"{key}={value}"
-        for key, value in sorted(payload.items(), key=lambda item: item[0])
-    )
-    secret_key = hmac.new(
-        b"WebAppData",
-        bot_token.encode("utf-8"),
-        hashlib.sha256,
-    ).digest()
-    expected_hash = hmac.new(
-        secret_key,
-        data_check_string.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    if not hmac.compare_digest(expected_hash, raw_hash):
-        raise HTTPException(status_code=401, detail="invalid_telegram_init_data")
-
-    auth_date_raw = payload.get("auth_date", "").strip()
-    if not auth_date_raw.isdigit():
-        raise HTTPException(status_code=400, detail="invalid_telegram_init_data")
-    auth_date = datetime.fromtimestamp(int(auth_date_raw), tz=timezone.utc)
-    age_seconds = (_utcnow() - auth_date).total_seconds()
-    if age_seconds < 0 or age_seconds > max_age_seconds:
-        raise HTTPException(status_code=401, detail="stale_telegram_init_data")
-
-    user_raw = payload.get("user")
-    if not isinstance(user_raw, str):
-        raise HTTPException(status_code=400, detail="invalid_telegram_init_data")
-    try:
-        user_payload = json.loads(user_raw)
-    except json.JSONDecodeError as error:
-        raise HTTPException(status_code=400, detail="invalid_telegram_init_data") from error
-
-    user_id = user_payload.get("id")
-    if not isinstance(user_id, int):
-        raise HTTPException(status_code=400, detail="invalid_telegram_init_data")
-
-    username = user_payload.get("username")
-    display_name_parts = [
-        user_payload.get("first_name") if isinstance(user_payload.get("first_name"), str) else "",
-        user_payload.get("last_name") if isinstance(user_payload.get("last_name"), str) else "",
-    ]
-    display_name = " ".join(part.strip() for part in display_name_parts if part and part.strip()).strip()
-    return TelegramMiniAppIdentity(
-        provider_user_id=str(user_id),
-        username=username.strip() if isinstance(username, str) and username.strip() else None,
-        display_name=display_name or None,
-    )
 
 
 def _resolve_linked_admin_user(
@@ -357,3 +287,91 @@ def resolve_linked_user_for_mini_app(
     provider_user_id: str,
 ) -> TelegramAdminUser:
     return _resolve_linked_admin_user(connection, provider_user_id=provider_user_id)
+
+
+def create_webapp_admin_token(
+    connection: sqlite3.Connection,
+    *,
+    user_id: str,
+    display_name: str | None,
+    secret_salt: str,
+    token_ttl_seconds: int,
+) -> WebAppTokenResult:
+    now = _utcnow()
+    expires_at = now + timedelta(seconds=token_ttl_seconds)
+    token = secrets.token_urlsafe(32)
+    token_hash = hash_token(token, secret_salt)
+    token_id = str(uuid.uuid4())
+
+    connection.execute(
+        """
+        INSERT INTO telegram_admin_webapp_tokens (
+            token_id,
+            token_hash,
+            user_id,
+            display_name,
+            created_at,
+            expires_at,
+            revoked_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, NULL)
+        """,
+        (
+            token_id,
+            token_hash,
+            user_id,
+            display_name,
+            now.isoformat(),
+            expires_at.isoformat(),
+        ),
+    )
+    connection.commit()
+    return WebAppTokenResult(token=token, expires_at=expires_at.isoformat())
+
+
+def resolve_webapp_admin_token(
+    connection: sqlite3.Connection,
+    *,
+    token: str,
+    secret_salt: str,
+) -> TelegramAdminUser | None:
+    token_hash = hash_token(token, secret_salt)
+    row = connection.execute(
+        """
+        SELECT user_id, display_name, expires_at, revoked_at
+        FROM telegram_admin_webapp_tokens
+        WHERE token_hash = ?
+        """,
+        (token_hash,),
+    ).fetchone()
+    if row is None:
+        return None
+    if row["revoked_at"] is not None:
+        return None
+    if _parse_iso_datetime(row["expires_at"]) <= _utcnow():
+        return None
+
+    resolved_display_name = (row["display_name"] or row["user_id"]).strip()
+    return TelegramAdminUser(
+        user_id=row["user_id"],
+        display_name=resolved_display_name or row["user_id"],
+    )
+
+
+def revoke_webapp_admin_token(
+    connection: sqlite3.Connection,
+    *,
+    token: str,
+    secret_salt: str,
+) -> None:
+    token_hash = hash_token(token, secret_salt)
+    now = _utcnow().isoformat()
+    connection.execute(
+        """
+        UPDATE telegram_admin_webapp_tokens
+        SET revoked_at = ?
+        WHERE token_hash = ? AND revoked_at IS NULL
+        """,
+        (now, token_hash),
+    )
+    connection.commit()

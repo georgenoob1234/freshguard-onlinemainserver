@@ -240,6 +240,7 @@ class AdminTelegramMiniAppLoginRequest(StrictModel):
 
 class AdminTelegramMiniAppLoginResponse(StrictModel):
     redirect: str = "/admin"
+    webapp_token: str | None = None
 
 
 class AdminTelegramChallengeStartResponse(StrictModel):

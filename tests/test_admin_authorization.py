@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-import hashlib
-import hmac
-import json
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlparse
+from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,13 +18,18 @@ def _bot_headers() -> dict[str, str]:
     return {"Authorization": "Bearer bot-service-token"}
 
 
+def _webapp_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     database_path = tmp_path / "onlinemainserver.db"
     monkeypatch.setenv("ADMIN_KEY", "admin-test-key")
     monkeypatch.setenv("SECRET_SALT", "secret-test-salt")
     monkeypatch.setenv("TGBOT_SERVICE_TOKEN", "bot-service-token")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-test-token")
+    monkeypatch.setenv("TGBOT_INTERNAL_BASE_URL", "http://tgbot-internal")
+    monkeypatch.setenv("TGBOT_INTERNAL_AUTH_TOKEN", "internal-auth-token")
     monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "freshguard_test_bot")
     monkeypatch.setenv("PUBLIC_BASE_URL", "http://testserver")
     monkeypatch.setenv("DATABASE_PATH", str(database_path))
@@ -85,47 +87,42 @@ def _assign_membership(
     assert response.status_code == 200
 
 
-def _build_init_data(
+def _login_via_miniapp(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
     *,
-    bot_token: str,
     provider_user_id: str,
     username: str,
-    first_name: str = "Admin",
 ) -> str:
-    payload = {
-        "auth_date": str(int(datetime.now(timezone.utc).timestamp())),
-        "query_id": "AAEAAQ",
-        "user": json.dumps(
-            {
-                "id": int(provider_user_id),
-                "username": username,
-                "first_name": first_name,
-            },
-            separators=(",", ":"),
-        ),
-    }
-    data_check_string = "\n".join(
-        f"{key}={value}" for key, value in sorted(payload.items(), key=lambda item: item[0])
-    )
-    secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
-    signature = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
-    return urlencode({**payload, "hash": signature})
+    def _fake_verify(*, init_data: str, settings):
+        _ = init_data
+        _ = settings
+        return SimpleNamespace(
+            provider_user_id=provider_user_id,
+            username=username,
+            display_name=username,
+        )
 
-
-def _login_via_miniapp(client: TestClient, *, provider_user_id: str, username: str) -> None:
-    init_data = _build_init_data(
-        bot_token="telegram-test-token",
-        provider_user_id=provider_user_id,
-        username=username,
+    monkeypatch.setattr(
+        "app.admin_ui.verify_webapp_init_data_via_tgbot",
+        _fake_verify,
     )
     response = client.post(
         "/admin/auth/telegram/miniapp",
-        json={"init_data": init_data},
+        json={"init_data": "test-init-data"},
     )
     assert response.status_code == 200
+    payload = response.json()
+    token = payload.get("webapp_token", "")
+    assert isinstance(token, str)
+    assert token.strip()
+    return token
 
 
-def test_miniapp_login_creates_session_and_applies_store_scope(client: TestClient):
+def test_miniapp_login_creates_session_and_applies_store_scope(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
     scoped_store = _create_store(client, display_name="Scoped Store")
     hidden_store = _create_store(client, display_name="Hidden Store")
     user = _ensure_bot_user(
@@ -142,14 +139,22 @@ def test_miniapp_login_creates_session_and_applies_store_scope(client: TestClien
         role="store_admin",
     )
 
-    _login_via_miniapp(client, provider_user_id="12345", username="scope_admin")
+    webapp_token = _login_via_miniapp(
+        client,
+        monkeypatch,
+        provider_user_id="12345",
+        username="scope_admin",
+    )
 
-    stores_response = client.get("/admin/stores?include_inactive=true")
+    stores_response = client.get("/admin/stores?include_inactive=true", headers=_webapp_headers(webapp_token))
     assert stores_response.status_code == 200
     assert "Scoped Store" in stores_response.text
     assert "Hidden Store" not in stores_response.text
 
-    hidden_detail = client.get(f"/admin/stores/{hidden_store['store_id']}")
+    hidden_detail = client.get(
+        f"/admin/stores/{hidden_store['store_id']}",
+        headers=_webapp_headers(webapp_token),
+    )
     assert hidden_detail.status_code == 404
 
 
@@ -200,7 +205,10 @@ def test_browser_telegram_challenge_login_and_single_use_token(client: TestClien
     assert replay_response.headers["location"].startswith("/admin/login?")
 
 
-def test_store_admin_cannot_assign_same_or_higher_priority_role(client: TestClient):
+def test_store_admin_cannot_assign_same_or_higher_priority_role(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
     store = _create_store(client, display_name="Hierarchy Store")
     actor = _ensure_bot_user(
         client,
@@ -228,7 +236,12 @@ def test_store_admin_cannot_assign_same_or_higher_priority_role(client: TestClie
         store_id=store["store_id"],
         role="operator",
     )
-    _login_via_miniapp(client, provider_user_id="24680", username="hierarchy_actor")
+    webapp_token = _login_via_miniapp(
+        client,
+        monkeypatch,
+        provider_user_id="24680",
+        username="hierarchy_actor",
+    )
 
     elevate_response = client.post(
         f"/admin/stores/{store['store_id']}/memberships",
@@ -238,6 +251,49 @@ def test_store_admin_cannot_assign_same_or_higher_priority_role(client: TestClie
             "set_active_store": "false",
             "confirm": "yes",
         },
+        headers=_webapp_headers(webapp_token),
         follow_redirects=False,
     )
     assert elevate_response.status_code == 403
+
+
+def test_miniapp_logout_revokes_webapp_token(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store = _create_store(client, display_name="Logout Store")
+    user = _ensure_bot_user(
+        client,
+        provider_user_id="33333",
+        provider_chat_id="chat-33333",
+        username="logout_admin",
+        display_name="Logout Admin",
+    )
+    _assign_membership(
+        client,
+        user_id=user["user_id"],
+        store_id=store["store_id"],
+        role="store_admin",
+    )
+    webapp_token = _login_via_miniapp(
+        client,
+        monkeypatch,
+        provider_user_id="33333",
+        username="logout_admin",
+    )
+
+    logout_response = client.post(
+        "/admin/logout",
+        headers=_webapp_headers(webapp_token),
+        follow_redirects=False,
+    )
+    assert logout_response.status_code == 303
+    assert logout_response.headers["location"] == "/admin/login"
+
+    stores_response = client.get(
+        "/admin/stores",
+        headers=_webapp_headers(webapp_token),
+        follow_redirects=False,
+    )
+    assert stores_response.status_code == 303
+    assert stores_response.headers["location"] == "/admin/login"

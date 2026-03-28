@@ -11,7 +11,7 @@ The sections below document env vars, run instructions, and API examples. This l
 - **Database lifecycle**: SQLite schema is created/updated on startup (`init_db`); Docker and local runs both rely on this.
 - **Role-based access control**: Permissions for bot users come from `ROLES_CONFIG_PATH` (default `./config/roles.json`), loaded at startup. Notification settings and bot endpoints enforce these roles.
 - **Static assets**: Files under the project `static/` directory are served at `/static`.
-- **Production mode**: If `APP_ENV` or `ENVIRONMENT` is `prod` or `production`, the browser admin session cookie is marked `Secure`, and `TGBOT_SERVICE_TOKEN` plus `OMS_ADMIN_SESSION_SECRET` must be set or the app will not start.
+- **Production mode**: If `APP_ENV` or `ENVIRONMENT` is `prod` or `production`, the browser admin session cookie is marked `Secure`, and `TGBOT_SERVICE_TOKEN` plus `OMS_ADMIN_SESSION_SECRET` must be set or the app will not start. For Telegram WebApp login verification, production requires delegated verification via tgbot (`TGBOT_INTERNAL_BASE_URL` and `TGBOT_INTERNAL_AUTH_TOKEN`).
 - **Custom validation errors** for `POST /update`: invalid envelopes return `400` with `{"detail":"Invalid update envelope.","errors":[...]}` instead of the generic FastAPI `422` shape.
 
 ### Background behavior
@@ -33,6 +33,8 @@ Session-based UI (not `X-ADMIN-KEY`). Optional first-time admin via `OMS_ADMIN_B
 
 - **Pages**: login/logout, dashboard summary, users (list, search, detail, ban/unban, membership management), stores (list, create, detail, update, memberships), devices (list, detail), enroll tokens (list, create).
 - **Internationalization**: Russian (default) and English; language is switched via `GET /admin/set-language` (cookie-backed). UI strings are translated in-app.
+- **Telegram WebApp bootstrap**: unauthenticated `GET /admin` serves a bootstrap page that attempts Telegram WebApp auto-login only when `window.Telegram.WebApp.initData` is present; otherwise it redirects to `/admin/login`.
+- **WebApp auth artifact**: WebApp login uses a short-lived server-issued token returned by OMS and kept in browser memory only (sent as `Authorization: Bearer ...` for `/admin/*` requests), without durable cookie/localStorage/sessionStorage persistence.
 
 ### Bot service API (`/bot/v1/*`, `Authorization: Bearer <TGBOT_SERVICE_TOKEN>`)
 
@@ -58,6 +60,11 @@ Set these before starting the app:
 - `SECRET_SALT` (required, used for `SHA-256(token + SECRET_SALT)`)
 - `OMS_ADMIN_SESSION_SECRET` (required in production for browser admin sessions)
 - `TGBOT_SERVICE_TOKEN` (required in production for `/bot/v1/*` service auth)
+- `TELEGRAM_BOT_TOKEN` (optional; OMS no longer uses it for Telegram WebApp verification flow)
+- `TGBOT_INTERNAL_BASE_URL` (required in production; enables OMS -> tgbot internal Telegram WebApp verification flow)
+- `TGBOT_WEBAPP_VERIFY_ENDPOINT_PATH` (optional, default: `/internal/admin-ui/verify-webapp-init`)
+- `TGBOT_INTERNAL_AUTH_TOKEN` (required in production shared secret for OMS -> tgbot internal verification call)
+- `TGBOT_WEBAPP_VERIFY_TIMEOUT_SECONDS` (optional, default: `5`)
 - `DATABASE_PATH` (optional, default: `./data/onlinemainserver.db`)
 - `ROLES_CONFIG_PATH` (optional, default: `./config/roles.json`)
 - `BLOB_STORAGE_DIR` (optional, default: `./data/blobs`)
@@ -79,6 +86,10 @@ Set these before starting the app:
 - `NOTIFICATION_STATUS_POLL_INTERVAL_SECONDS` (optional, default: `2`)
 - `OMS_ADMIN_BOOTSTRAP_USERNAME` (optional; when set with password and no admin exists, creates initial admin account)
 - `OMS_ADMIN_BOOTSTRAP_PASSWORD` (optional; used with `OMS_ADMIN_BOOTSTRAP_USERNAME`)
+- `ADMIN_TELEGRAM_LOGIN_CHALLENGE_TTL_SECONDS` (optional, default: `300`)
+- `ADMIN_TELEGRAM_LOGIN_TOKEN_TTL_SECONDS` (optional, default: `300`)
+- `TELEGRAM_WEBAPP_AUTH_MAX_AGE_SECONDS` (optional, default: `300`)
+- `ADMIN_TELEGRAM_WEBAPP_TOKEN_TTL_SECONDS` (optional, default: `600`)
 
 Example:
 
@@ -87,6 +98,10 @@ export ADMIN_KEY="change-me-admin-key"
 export SECRET_SALT="change-me-long-random-salt"
 export OMS_ADMIN_SESSION_SECRET="change-me-admin-session-secret"
 export TGBOT_SERVICE_TOKEN="change-me-bot-service-token"
+export TGBOT_INTERNAL_BASE_URL="http://tgbot:8081"
+export TGBOT_WEBAPP_VERIFY_ENDPOINT_PATH="/internal/admin-ui/verify-webapp-init"
+export TGBOT_INTERNAL_AUTH_TOKEN="change-me-internal-auth-token"
+export TGBOT_WEBAPP_VERIFY_TIMEOUT_SECONDS="5"
 export DATABASE_PATH="./data/onlinemainserver.db"
 export ROLES_CONFIG_PATH="./config/roles.json"
 export BLOB_STORAGE_DIR="./data/blobs"
@@ -108,6 +123,7 @@ export NOTIFICATION_PUSH_POLL_INTERVAL_SECONDS="2"
 export NOTIFICATION_STATUS_POLL_INTERVAL_SECONDS="2"
 export OMS_ADMIN_BOOTSTRAP_USERNAME="superadmin"
 export OMS_ADMIN_BOOTSTRAP_PASSWORD="change-me-admin-password"
+export ADMIN_TELEGRAM_WEBAPP_TOKEN_TTL_SECONDS="600"
 ```
 
 ## Run

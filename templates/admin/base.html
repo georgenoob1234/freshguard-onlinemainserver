@@ -76,5 +76,142 @@
 
     {% block content %}{% endblock %}
   </main>
+  {% if webapp_auth_mode %}
+  <script>
+    (function () {
+      const OMS_WEBAPP_TOKEN_KEY = "__OMS_ADMIN_WEBAPP_TOKEN";
+
+      function tokenFromWindowName() {
+        try {
+          const payload = JSON.parse(window.name || "{}");
+          if (payload && typeof payload.oms_admin_webapp_token === "string") {
+            return payload.oms_admin_webapp_token.trim();
+          }
+        } catch (_error) {
+          return "";
+        }
+        return "";
+      }
+
+      function getToken() {
+        const inMemory = typeof window[OMS_WEBAPP_TOKEN_KEY] === "string" ? window[OMS_WEBAPP_TOKEN_KEY].trim() : "";
+        if (inMemory) {
+          return inMemory;
+        }
+        const fromName = tokenFromWindowName();
+        if (fromName) {
+          window[OMS_WEBAPP_TOKEN_KEY] = fromName;
+          return fromName;
+        }
+        return "";
+      }
+
+      function persistToken(token) {
+        if (!token) {
+          return;
+        }
+        window[OMS_WEBAPP_TOKEN_KEY] = token;
+        try {
+          window.name = JSON.stringify({ oms_admin_webapp_token: token });
+        } catch (_error) {
+          // Keep in-memory token only if window.name cannot be updated.
+        }
+      }
+
+      function clearToken() {
+        delete window[OMS_WEBAPP_TOKEN_KEY];
+        window.name = "";
+      }
+
+      async function navigateWithToken(url, options, historyMode) {
+        const token = getToken();
+        if (!token) {
+          window.location.replace("/admin");
+          return;
+        }
+
+        const requestOptions = options || {};
+        const headers = new Headers(requestOptions.headers || {});
+        headers.set("Authorization", `Bearer ${token}`);
+        const response = await fetch(url, {
+          ...requestOptions,
+          headers,
+          credentials: "same-origin",
+          redirect: "follow",
+        });
+        const html = await response.text();
+        const nextUrl = new URL(response.url || url, window.location.origin);
+        if (nextUrl.pathname.startsWith("/admin/login")) {
+          clearToken();
+        } else {
+          persistToken(token);
+        }
+        if (historyMode === "replace") {
+          history.replaceState({}, "", `${nextUrl.pathname}${nextUrl.search}`);
+        } else {
+          history.pushState({}, "", `${nextUrl.pathname}${nextUrl.search}`);
+        }
+        document.open();
+        document.write(html);
+        document.close();
+      }
+
+      document.addEventListener("click", function (event) {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+          return;
+        }
+        const link = target.closest("a");
+        if (!(link instanceof HTMLAnchorElement)) {
+          return;
+        }
+        if (link.target && link.target !== "_self") {
+          return;
+        }
+        const destination = new URL(link.href, window.location.origin);
+        if (destination.origin !== window.location.origin) {
+          return;
+        }
+        if (!destination.pathname.startsWith("/admin")) {
+          return;
+        }
+        event.preventDefault();
+        navigateWithToken(`${destination.pathname}${destination.search}${destination.hash}`, { method: "GET" }, "push");
+      });
+
+      document.addEventListener("submit", function (event) {
+        const target = event.target;
+        if (!(target instanceof HTMLFormElement)) {
+          return;
+        }
+        const action = target.getAttribute("action") || window.location.pathname;
+        const destination = new URL(action, window.location.origin);
+        if (destination.origin !== window.location.origin || !destination.pathname.startsWith("/admin")) {
+          return;
+        }
+        event.preventDefault();
+        const method = (target.method || "GET").toUpperCase();
+        const formData = new FormData(target);
+        if (method === "GET") {
+          const params = new URLSearchParams();
+          for (const [key, value] of formData.entries()) {
+            if (typeof value === "string") {
+              params.append(key, value);
+            }
+          }
+          const query = params.toString();
+          const nextPath = query ? `${destination.pathname}?${query}` : destination.pathname;
+          navigateWithToken(nextPath, { method: "GET" }, "push");
+          return;
+        }
+        navigateWithToken(destination.pathname, { method, body: formData }, "push");
+      });
+
+      window.addEventListener("popstate", function () {
+        navigateWithToken(`${window.location.pathname}${window.location.search}`, { method: "GET" }, "replace");
+      });
+    })();
+  </script>
+  {% endif %}
 </body>
 </html>

@@ -492,6 +492,20 @@ def init_db(database_path: str) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_tg_admin_login_tokens_expires
             ON telegram_admin_login_completion_tokens(expires_at);
+
+            CREATE TABLE IF NOT EXISTS telegram_admin_webapp_tokens (
+                token_id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                user_id TEXT NOT NULL,
+                display_name TEXT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tg_admin_webapp_tokens_expires
+            ON telegram_admin_webapp_tokens(expires_at);
             """
         )
         _migrate_scan_results_scan_id_to_image_id(connection)

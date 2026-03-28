@@ -13,6 +13,10 @@ class Settings:
     admin_bootstrap_password: str
     tgbot_service_token: str
     telegram_bot_token: str
+    tgbot_internal_base_url: str
+    tgbot_webapp_verify_endpoint_path: str
+    tgbot_internal_auth_token: str
+    tgbot_webapp_verify_timeout_seconds: float
     telegram_bot_username: str
     public_base_url: str
     database_path: str
@@ -37,6 +41,7 @@ class Settings:
     admin_telegram_login_challenge_ttl_seconds: int
     admin_telegram_login_token_ttl_seconds: int
     telegram_webapp_auth_max_age_seconds: int
+    admin_telegram_webapp_token_ttl_seconds: int
 
 
 def _read_positive_float_env(var_name: str, default: float) -> float:
@@ -96,10 +101,18 @@ def get_settings() -> Settings:
     runtime_environment = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "")).strip().lower()
     tgbot_service_token = os.getenv("TGBOT_SERVICE_TOKEN", "")
     telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    tgbot_internal_base_url = os.getenv("TGBOT_INTERNAL_BASE_URL", "").strip()
+    tgbot_internal_auth_token = os.getenv("TGBOT_INTERNAL_AUTH_TOKEN", "").strip()
     if runtime_environment in {"prod", "production"} and not tgbot_service_token:
         raise RuntimeError("TGBOT_SERVICE_TOKEN environment variable is required in production")
-    if runtime_environment in {"prod", "production"} and not telegram_bot_token:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN environment variable is required in production")
+    if runtime_environment in {"prod", "production"} and not tgbot_internal_base_url:
+        raise RuntimeError(
+            "TGBOT_INTERNAL_BASE_URL environment variable is required in production for Telegram WebApp verification"
+        )
+    if runtime_environment in {"prod", "production"} and not tgbot_internal_auth_token:
+        raise RuntimeError(
+            "TGBOT_INTERNAL_AUTH_TOKEN environment variable is required in production for Telegram WebApp verification"
+        )
     admin_session_secret = os.getenv("OMS_ADMIN_SESSION_SECRET", "").strip()
     if runtime_environment in {"prod", "production"} and not admin_session_secret:
         raise RuntimeError("OMS_ADMIN_SESSION_SECRET environment variable is required in production")
@@ -112,6 +125,17 @@ def get_settings() -> Settings:
         admin_bootstrap_password=os.getenv("OMS_ADMIN_BOOTSTRAP_PASSWORD", ""),
         tgbot_service_token=tgbot_service_token,
         telegram_bot_token=telegram_bot_token,
+        tgbot_internal_base_url=tgbot_internal_base_url,
+        tgbot_webapp_verify_endpoint_path=os.getenv(
+            "TGBOT_WEBAPP_VERIFY_ENDPOINT_PATH",
+            "/internal/admin-ui/verify-webapp-init",
+        ).strip()
+        or "/internal/admin-ui/verify-webapp-init",
+        tgbot_internal_auth_token=tgbot_internal_auth_token,
+        tgbot_webapp_verify_timeout_seconds=_read_positive_float_env(
+            "TGBOT_WEBAPP_VERIFY_TIMEOUT_SECONDS",
+            5.0,
+        ),
         telegram_bot_username=os.getenv("TELEGRAM_BOT_USERNAME", "").strip(),
         public_base_url=os.getenv("PUBLIC_BASE_URL", "").strip(),
         database_path=os.getenv("DATABASE_PATH", "./data/onlinemainserver.db"),
@@ -187,5 +211,9 @@ def get_settings() -> Settings:
         telegram_webapp_auth_max_age_seconds=_read_positive_int_env(
             "TELEGRAM_WEBAPP_AUTH_MAX_AGE_SECONDS",
             300,
+        ),
+        admin_telegram_webapp_token_ttl_seconds=_read_positive_int_env(
+            "ADMIN_TELEGRAM_WEBAPP_TOKEN_TTL_SECONDS",
+            600,
         ),
     )

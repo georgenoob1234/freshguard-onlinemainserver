@@ -4,24 +4,24 @@ from pathlib import Path
 import sqlite3
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app import admin_ops
 from app.admin_auth import authenticate_admin
-from app.admin_authorization import AdminActor, require_admin_ui_access
+from app.admin_authorization import AdminActor, require_admin_ui_access, resolve_admin_actor
 from app.admin_i18n import make_translate_for, resolve_locale
 from app.admin_telegram_auth import (
+    create_webapp_admin_token,
     consume_browser_login_token,
     create_browser_login_challenge,
+    revoke_webapp_admin_token,
     resolve_linked_user_for_mini_app,
-    verify_telegram_webapp_init_data,
 )
 from app.admin_session import (
     clear_admin_session,
-    get_admin_session_username,
-    require_admin_session,
+    get_admin_webapp_token,
     set_admin_oms_user_session,
     set_admin_session_username,
 )
@@ -37,6 +37,7 @@ from app.models import (
     AdminUpdateStoreRequest,
     AdminUpdateUserBanRequest,
 )
+from app.tgbot_internal_client import verify_webapp_init_data_via_tgbot
 
 
 router = APIRouter(prefix="/admin", tags=["admin-ui"])
@@ -57,6 +58,7 @@ def _render(
         "html_lang": locale,
         "t": t,
         "_": t,
+        "webapp_auth_mode": bool(getattr(request.state, "admin_webapp_auth_mode", False)),
         **context,
     }
     return templates.TemplateResponse(request, template_name, merged, status_code=status_code)
@@ -105,11 +107,31 @@ def _telegram_login_error_message(detail: str, *, t) -> str:
     return t(mapping.get(detail, "error_telegram_login_failed"))
 
 
+def _render_webapp_bootstrap(request: Request) -> HTMLResponse:
+    locale = resolve_locale(request)
+    t = make_translate_for(locale)
+    return _render(
+        request,
+        "admin/webapp_bootstrap.html",
+        {
+            "page_title": t("page_title_login"),
+            "login_error_message": t("error_telegram_login_failed"),
+            "bootstrap_loading_message": t("telegram_webapp_bootstrap_loading"),
+        },
+    )
+
+
 @router.get("/login", response_class=HTMLResponse)
-def login_page(request: Request) -> HTMLResponse:
-    username = get_admin_session_username(request)
-    if username is not None:
+def login_page(
+    request: Request,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> HTMLResponse:
+    try:
+        resolve_admin_actor(connection, request=request)
         return _redirect("/admin")
+    except HTTPException as error:
+        if error.status_code not in {303, 401, 403}:
+            raise
     locale = resolve_locale(request)
     t = make_translate_for(locale)
     return _render(
@@ -154,22 +176,26 @@ def login_via_telegram_miniapp(
     connection: sqlite3.Connection = Depends(get_db),
 ) -> AdminTelegramMiniAppLoginResponse:
     settings = get_settings()
-    identity = verify_telegram_webapp_init_data(
+    identity = verify_webapp_init_data_via_tgbot(
         init_data=payload.init_data,
-        bot_token=settings.telegram_bot_token,
-        max_age_seconds=settings.telegram_webapp_auth_max_age_seconds,
+        settings=settings,
     )
     linked_user = resolve_linked_user_for_mini_app(
         connection,
         provider_user_id=identity.provider_user_id,
     )
-    set_admin_oms_user_session(
-        request,
+    webapp_token = create_webapp_admin_token(
+        connection,
         user_id=linked_user.user_id,
         display_name=linked_user.display_name,
-        auth_method="telegram_miniapp",
+        secret_salt=settings.secret_salt,
+        token_ttl_seconds=settings.admin_telegram_webapp_token_ttl_seconds,
     )
-    return AdminTelegramMiniAppLoginResponse(redirect="/admin")
+    clear_admin_session(request)
+    return AdminTelegramMiniAppLoginResponse(
+        redirect="/admin",
+        webapp_token=webapp_token.token,
+    )
 
 
 @router.post("/auth/telegram/challenge/start", response_model=AdminTelegramChallengeStartResponse)
@@ -225,11 +251,32 @@ def complete_telegram_browser_login(
     return _redirect("/admin")
 
 
+@router.get("/telegram-webapp", response_class=HTMLResponse)
+def telegram_webapp_bootstrap(
+    request: Request,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    try:
+        resolve_admin_actor(connection, request=request)
+        return _redirect("/admin")
+    except HTTPException as error:
+        if error.status_code != 303:
+            raise
+    return _render_webapp_bootstrap(request)
+
+
 @router.post("/logout")
 def logout(
     request: Request,
-    _: str = Depends(require_admin_session),
+    connection: sqlite3.Connection = Depends(get_db),
 ) -> RedirectResponse:
+    webapp_token = get_admin_webapp_token(request)
+    if webapp_token is not None:
+        revoke_webapp_admin_token(
+            connection,
+            token=webapp_token,
+            secret_salt=get_settings().secret_salt,
+        )
     clear_admin_session(request)
     return _redirect("/admin/login")
 
@@ -237,9 +284,14 @@ def logout(
 @router.get("", response_class=HTMLResponse)
 def dashboard(
     request: Request,
-    actor: AdminActor = Depends(require_admin_ui_access),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> HTMLResponse:
+    try:
+        actor = resolve_admin_actor(connection, request=request)
+    except HTTPException as error:
+        if error.status_code == 303:
+            return _render_webapp_bootstrap(request)
+        raise
     settings = get_settings()
     scoped_store_ids = None if actor.is_global else actor.scoped_store_ids
     counts = admin_ops.get_dashboard_counts(connection, scoped_store_ids=scoped_store_ids)

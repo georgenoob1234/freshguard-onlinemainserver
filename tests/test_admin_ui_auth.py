@@ -37,9 +37,13 @@ def test_bootstrap_admin_account_created(client: TestClient):
 
 
 def test_admin_pages_require_login_redirect(client: TestClient):
-    response = client.get("/admin", follow_redirects=False)
-    assert response.status_code == 303
-    assert response.headers["location"] == "/admin/login"
+    response = client.get("/admin")
+    assert response.status_code == 200
+    assert "/admin/auth/telegram/miniapp" in response.text
+
+    gated_response = client.get("/admin/users", follow_redirects=False)
+    assert gated_response.status_code == 303
+    assert gated_response.headers["location"] == "/admin/login"
 
 
 def test_login_and_logout_flow(client: TestClient):

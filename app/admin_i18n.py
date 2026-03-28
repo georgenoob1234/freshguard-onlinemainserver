@@ -198,6 +198,10 @@ CATALOG: dict[str, dict[str, str]] = {
     "label_password": {"ru": "Пароль", "en": "Password"},
     "button_sign_in": {"ru": "Войти", "en": "Sign In"},
     "button_login_via_telegram": {"ru": "Войти через Telegram", "en": "Login via Telegram"},
+    "telegram_webapp_bootstrap_loading": {
+        "ru": "Проверяем Telegram Mini App контекст...",
+        "en": "Checking Telegram Mini App context...",
+    },
     "hint_login_via_telegram": {
         "ru": "Нажмите кнопку, чтобы открыть бота и завершить вход.",
         "en": "Use this button to open the bot and complete login.",

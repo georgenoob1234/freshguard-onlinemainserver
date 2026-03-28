@@ -12,6 +12,8 @@ ADMIN_SESSION_BOOTSTRAP_USERNAME_KEY = "admin_bootstrap_username"
 ADMIN_SESSION_OMS_USER_ID_KEY = "admin_oms_user_id"
 ADMIN_SESSION_DISPLAY_NAME_KEY = "admin_display_name"
 ADMIN_SESSION_AUTH_METHOD_KEY = "admin_auth_method"
+ADMIN_WEBAPP_AUTH_HEADER = "Authorization"
+ADMIN_WEBAPP_TOKEN_HEADER = "X-OMS-Admin-WebApp-Token"
 
 AdminPrincipalKind = Literal["bootstrap", "oms_user"]
 
@@ -126,6 +128,20 @@ def get_admin_session_username(request: Request) -> str | None:
     if principal is None:
         return None
     return principal.display_name
+
+
+def get_admin_webapp_token(request: Request) -> str | None:
+    raw_authorization = request.headers.get(ADMIN_WEBAPP_AUTH_HEADER, "")
+    authorization = _as_non_empty_string(raw_authorization)
+    if authorization is not None:
+        scheme, separator, token = authorization.partition(" ")
+        if separator and scheme.lower() == "bearer":
+            normalized_token = _as_non_empty_string(token)
+            if normalized_token is not None:
+                return normalized_token
+
+    raw_token_header = request.headers.get(ADMIN_WEBAPP_TOKEN_HEADER, "")
+    return _as_non_empty_string(raw_token_header)
 
 
 def require_admin_session(request: Request) -> str:

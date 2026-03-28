@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="{{ html_lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page_title }} — {{ t('app_title') }}</title>
+  <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body class="login-page">
+  <div class="login-card">
+    <div class="login-card__header">
+      <div class="login-card__brand">
+        <span class="login-card__logo">OMS</span>
+      </div>
+      <h1 class="login-card__title">{{ t('login_heading') }}</h1>
+      <p class="login-card__subtitle">{{ bootstrap_loading_message }}</p>
+    </div>
+  </div>
+
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script>
+    const OMS_WEBAPP_TOKEN_KEY = "__OMS_ADMIN_WEBAPP_TOKEN";
+
+    function setOmsWebAppToken(token) {
+      if (!token) {
+        return;
+      }
+      window[OMS_WEBAPP_TOKEN_KEY] = token;
+      try {
+        window.name = JSON.stringify({ oms_admin_webapp_token: token });
+      } catch (_error) {
+        // Ignore serialization failures and keep in-memory copy only.
+      }
+    }
+
+    async function loadAdminWithToken(path, token) {
+      const response = await fetch(path, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+        credentials: "same-origin",
+      });
+      const html = await response.text();
+      const responseUrl = response.url || path;
+      const nextUrl = new URL(responseUrl, window.location.origin);
+      history.replaceState({}, "", `${nextUrl.pathname}${nextUrl.search}`);
+      document.open();
+      document.write(html);
+      document.close();
+    }
+
+    async function bootstrapTelegramWebAppLogin() {
+      const initData = window.Telegram?.WebApp?.initData?.trim() || "";
+      if (!initData) {
+        window.location.replace("/admin/login");
+        return;
+      }
+
+      try {
+        const response = await fetch("/admin/auth/telegram/miniapp", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ init_data: initData })
+        });
+        if (!response.ok) {
+          const errorMessage = {{ login_error_message | tojson }};
+          window.location.replace(`/admin/login?error=${encodeURIComponent(errorMessage)}`);
+          return;
+        }
+        const payload = await response.json();
+        const token = typeof payload.webapp_token === "string" ? payload.webapp_token.trim() : "";
+        if (!token) {
+          const errorMessage = {{ login_error_message | tojson }};
+          window.location.replace(`/admin/login?error=${encodeURIComponent(errorMessage)}`);
+          return;
+        }
+        setOmsWebAppToken(token);
+        const redirectPath = typeof payload.redirect === "string" && payload.redirect ? payload.redirect : "/admin";
+        await loadAdminWithToken(redirectPath, token);
+      } catch (_error) {
+        const errorMessage = {{ login_error_message | tojson }};
+        window.location.replace(`/admin/login?error=${encodeURIComponent(errorMessage)}`);
+      }
+    }
+
+    bootstrapTelegramWebAppLogin();
+  </script>
+</body>
+</html>
