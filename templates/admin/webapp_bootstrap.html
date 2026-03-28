@@ -6,7 +6,7 @@
   <title>{{ page_title }} — {{ t('app_title') }}</title>
   <link rel="stylesheet" href="/static/admin.css">
 </head>
-<body class="login-page">
+<body class="login-page telegram-webapp">
   <div class="login-card">
     <div class="login-card__header">
       <div class="login-card__brand">
@@ -73,13 +73,30 @@
         headers: { Authorization: `Bearer ${token}` },
         credentials: "same-origin",
       });
-      const html = await response.text();
+      let html = await response.text();
       const responseUrl = response.url || path;
       const nextUrl = new URL(responseUrl, window.location.origin);
       history.replaceState({}, "", `${nextUrl.pathname}${nextUrl.search}`);
+
+      // Ensure viewport meta tag is present for mobile responsiveness
+      if (!html.includes('viewport')) {
+        html = html.replace('<head>', '<head>\n  <meta name="viewport" content="width=device-width, initial-scale=1">');
+      }
+
+      // Add telegram-webapp class to body for WebApp-specific CSS
+      if (!html.includes('telegram-webapp')) {
+        html = html.replace('<body', '<body class="telegram-webapp"');
+        html = html.replace(/<body class="([^"]*)"/g, '<body class="$1 telegram-webapp"');
+      }
+
       document.open();
       document.write(html);
       document.close();
+
+      // Ensure Telegram WebApp is properly expanded after loading content
+      if (window.Telegram?.WebApp) {
+        window.Telegram.WebApp.expand();
+      }
     }
 
     function readInitData() {
@@ -87,7 +104,11 @@
     }
 
     async function waitForInitData(maxWaitMs) {
-      window.Telegram?.WebApp?.ready?.();
+      // Initialize Telegram WebApp properly for mobile viewport
+      if (window.Telegram?.WebApp) {
+        window.Telegram.WebApp.ready();
+        window.Telegram.WebApp.expand();
+      }
       const deadline = Date.now() + maxWaitMs;
       let data = readInitData();
       while (!data && Date.now() < deadline) {
