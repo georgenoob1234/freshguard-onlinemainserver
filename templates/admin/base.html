@@ -15,6 +15,14 @@
         <span>{{ t('app_title') }}</span>
       </a>
 
+      <button class="mobile-menu-toggle" type="button" aria-label="Toggle navigation menu" aria-expanded="false" onclick="document.querySelector('.nav').classList.toggle('is-open'); this.setAttribute('aria-expanded', document.querySelector('.nav').classList.contains('is-open'));">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </button>
+
       <nav class="nav">
         <a class="nav__link{% if request.url.path == '/admin' %} nav__link--active{% endif %}" href="/admin">
           {{ t('nav_dashboard') }}
@@ -76,6 +84,38 @@
 
     {% block content %}{% endblock %}
   </main>
+  <script>
+    // Mobile menu: close when clicking outside or on a link
+    document.addEventListener('click', function(e) {
+      const nav = document.querySelector('.nav');
+      const toggle = document.querySelector('.mobile-menu-toggle');
+      if (!nav || !toggle) return;
+
+      // Close menu when clicking a link
+      if (e.target.closest('.nav__link')) {
+        nav.classList.remove('is-open');
+        toggle.setAttribute('aria-expanded', 'false');
+      }
+
+      // Close menu when clicking outside
+      if (!nav.contains(e.target) && !toggle.contains(e.target) && nav.classList.contains('is-open')) {
+        nav.classList.remove('is-open');
+        toggle.setAttribute('aria-expanded', 'false');
+      }
+    });
+
+    // Close mobile menu on window resize when going above 768px
+    window.addEventListener('resize', function() {
+      if (window.innerWidth > 768) {
+        const nav = document.querySelector('.nav');
+        const toggle = document.querySelector('.mobile-menu-toggle');
+        if (nav && nav.classList.contains('is-open')) {
+          nav.classList.remove('is-open');
+          if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        }
+      }
+    });
+  </script>
   {% if webapp_auth_mode %}
   <script>
     (function () {
