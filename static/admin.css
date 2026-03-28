@@ -93,12 +93,23 @@ html {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Prevent text size adjustment on orientation change in iOS */
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
   background: var(--color-bg);
   color: var(--color-text);
   min-height: 100vh;
+  /* Ensure proper mobile viewport behavior */
+  min-width: 320px;
+  overflow-x: hidden;
+}
+
+/* Telegram WebApp specific fixes */
+.telegram-webapp body {
+  /* Prevent elastic scrolling in Telegram WebView */
+  overscroll-behavior: none;
 }
 
 /* Header / Navigation */
