@@ -53,10 +53,24 @@
       document.close();
     }
 
+    function readInitData() {
+      return (window.Telegram?.WebApp?.initData || "").trim();
+    }
+
+    async function waitForInitData(maxWaitMs) {
+      window.Telegram?.WebApp?.ready?.();
+      const deadline = Date.now() + maxWaitMs;
+      let data = readInitData();
+      while (!data && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 100));
+        data = readInitData();
+      }
+      return data;
+    }
+
     async function bootstrapTelegramWebAppLogin() {
-      const initData = window.Telegram?.WebApp?.initData?.trim() || "";
+      const initData = await waitForInitData(2500);
       if (!initData) {
-        window.location.replace("/admin/login");
         return;
       }
 
@@ -90,7 +104,7 @@
     setTimeout(() => {
       const fallbackContainer = document.getElementById("fallback-login-container");
       if (fallbackContainer) {
-        fallbackContainer.style.display = "flex";
+        fallbackContainer.style.display = "";
       }
     }, 3000);
 
