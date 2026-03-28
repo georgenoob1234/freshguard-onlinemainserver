@@ -5,6 +5,7 @@
   <p class="page-header__subtitle">{{ t('page_title_stores') }}</p>
 </div>
 
+{% if can_create_store %}
 <div class="card mb-6">
   <div class="card__header">
     <h2 class="card__title">{{ t('create_store_title') }}</h2>
@@ -32,6 +33,7 @@
     </form>
   </div>
 </div>
+{% endif %}
 
 <div class="card">
   <div class="card__header">

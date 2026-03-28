@@ -45,6 +45,27 @@ CATALOG: dict[str, dict[str, str]] = {
     "error_confirm_role_change": {"ru": "Подтвердите изменение роли.", "en": "Please confirm the role change."},
     "error_confirm_store_update": {"ru": "Подтвердите обновление магазина.", "en": "Please confirm store update."},
     "error_confirm_membership_change": {"ru": "Подтвердите изменение членства.", "en": "Please confirm membership change."},
+    "error_forbidden_action": {"ru": "Недостаточно прав для этого действия.", "en": "You do not have permission for this action."},
+    "error_telegram_login_failed": {"ru": "Не удалось выполнить вход через Telegram.", "en": "Telegram login failed."},
+    "error_telegram_not_linked": {
+        "ru": "Этот Telegram-аккаунт не привязан к OMS пользователю.",
+        "en": "This Telegram account is not linked to an OMS user.",
+    },
+    "error_telegram_user_banned": {
+        "ru": "Доступ запрещен: пользователь заблокирован.",
+        "en": "Access denied: user is banned.",
+    },
+    "error_telegram_admin_access_required": {
+        "ru": "У пользователя нет доступа к админ-панели.",
+        "en": "User does not have admin UI access.",
+    },
+    "error_telegram_challenge_expired": {"ru": "Срок действия Telegram-входа истек.", "en": "Telegram login challenge expired."},
+    "error_telegram_challenge_invalid": {"ru": "Ссылка Telegram-входа недействительна.", "en": "Telegram login challenge is invalid."},
+    "error_telegram_token_invalid": {"ru": "Токен входа недействителен.", "en": "Login token is invalid."},
+    "error_telegram_token_used": {"ru": "Токен входа уже использован.", "en": "Login token was already used."},
+    "error_telegram_token_expired": {"ru": "Срок действия токена входа истек.", "en": "Login token expired."},
+    "error_telegram_init_invalid": {"ru": "Некорректные данные Telegram Mini App.", "en": "Invalid Telegram Mini App payload."},
+    "error_telegram_init_expired": {"ru": "Telegram Mini App данные устарели.", "en": "Telegram Mini App payload is stale."},
     # Dashboard
     "stat_total_stores": {"ru": "Всего магазинов", "en": "Total Stores"},
     "stat_total_users": {"ru": "Всего пользователей", "en": "Total Users"},
@@ -176,6 +197,12 @@ CATALOG: dict[str, dict[str, str]] = {
     "label_username": {"ru": "Имя пользователя", "en": "Username"},
     "label_password": {"ru": "Пароль", "en": "Password"},
     "button_sign_in": {"ru": "Войти", "en": "Sign In"},
+    "button_login_via_telegram": {"ru": "Войти через Telegram", "en": "Login via Telegram"},
+    "hint_login_via_telegram": {
+        "ru": "Нажмите кнопку, чтобы открыть бота и завершить вход.",
+        "en": "Use this button to open the bot and complete login.",
+    },
+    "hint_telegram_opening": {"ru": "Открываем Telegram...", "en": "Opening Telegram..."},
     "error_invalid_credentials": {"ru": "Неверное имя пользователя или пароль.", "en": "Invalid username or password."},
 }
 

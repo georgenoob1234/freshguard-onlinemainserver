@@ -13,6 +13,7 @@
   </p>
 </div>
 
+{% if can_edit_store %}
 <div class="card mb-6">
   <div class="card__header">
     <h2 class="card__title">{{ t('section_store_summary') }}</h2>
@@ -40,6 +41,7 @@
     </div>
   </div>
 </div>
+{% endif %}
 
 <div class="card mb-6">
   <div class="card__header">
@@ -74,6 +76,7 @@
   </div>
 </div>
 
+{% if can_manage_memberships %}
 <div class="card mb-6">
   <div class="card__header">
     <h2 class="card__title">{{ t('section_members') }}</h2>
@@ -154,7 +157,9 @@
     </form>
   </div>
 </div>
+{% endif %}
 
+{% if can_view_devices %}
 <div class="card">
   <div class="card__header">
     <h2 class="card__title">{{ t('section_store_devices') }}</h2>
@@ -208,4 +213,5 @@
     </div>
   </div>
 </div>
+{% endif %}
 {% endblock %}

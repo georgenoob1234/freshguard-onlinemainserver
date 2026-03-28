@@ -28,7 +28,7 @@ from app.models import (
     DeviceStatusResponse,
 )
 from app.realtime import connection_manager
-from app.roles import is_known_role
+from app.roles import get_role_priority, is_known_role, is_permission_granted
 from app.security import generate_token, hash_token
 
 
@@ -242,6 +242,60 @@ def _select_active_membership_row(
     ).fetchone()
 
 
+def _select_user_active_roles_for_store(
+    connection: sqlite3.Connection,
+    *,
+    user_id: str,
+    store_id: str,
+) -> tuple[str, ...]:
+    rows = connection.execute(
+        """
+        SELECT role
+        FROM store_memberships
+        WHERE user_id = ? AND store_id = ? AND revoked_at IS NULL
+        ORDER BY created_at ASC, membership_id ASC
+        """,
+        (user_id, store_id),
+    ).fetchall()
+    return tuple(row["role"] for row in rows)
+
+
+def _assert_membership_update_allowed(
+    connection: sqlite3.Connection,
+    *,
+    actor_user_id: str | None,
+    actor_is_bootstrap: bool,
+    target_user_id: str,
+    store_id: str,
+    target_role: str,
+    existing_target_role: str | None,
+) -> None:
+    if actor_is_bootstrap:
+        return
+    if actor_user_id is None:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    actor_roles = _select_user_active_roles_for_store(
+        connection,
+        user_id=actor_user_id,
+        store_id=store_id,
+    )
+    if not actor_roles:
+        raise HTTPException(status_code=403, detail="forbidden")
+    if not any(is_permission_granted(role_name, "roles.manage") for role_name in actor_roles):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    actor_priority = min(get_role_priority(role_name) for role_name in actor_roles)
+    new_role_priority = get_role_priority(target_role)
+    if new_role_priority <= actor_priority:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    if existing_target_role is not None:
+        current_role_priority = get_role_priority(existing_target_role)
+        if current_role_priority <= actor_priority:
+            raise HTTPException(status_code=403, detail="forbidden")
+
+
 def _membership_row_to_model(row: sqlite3.Row) -> AdminStoreMembership:
     return AdminStoreMembership(
         membership_id=row["membership_id"],
@@ -294,6 +348,15 @@ def _upsert_user_context(
         """,
         (user_id, active_store_id, active_device_id, updated_at),
     )
+
+
+def _normalize_scoped_store_ids(
+    scoped_store_ids: frozenset[str] | None,
+) -> tuple[str, ...] | None:
+    if scoped_store_ids is None:
+        return None
+    normalized = tuple(sorted(store_id for store_id in scoped_store_ids if store_id))
+    return normalized
 
 
 def create_store(
@@ -559,6 +622,8 @@ def upsert_user_store_membership(
     store_id: str,
     payload: AdminUpsertStoreMembershipRequest,
     note: str = "admin_api",
+    actor_user_id: str | None = None,
+    actor_is_bootstrap: bool = True,
 ) -> AdminUpsertStoreMembershipResponse:
     try:
         connection.execute("BEGIN IMMEDIATE")
@@ -572,6 +637,15 @@ def upsert_user_store_membership(
             connection,
             user_id=user_id,
             store_id=store_id,
+        )
+        _assert_membership_update_allowed(
+            connection,
+            actor_user_id=actor_user_id,
+            actor_is_bootstrap=actor_is_bootstrap,
+            target_user_id=user_id,
+            store_id=store_id,
+            target_role=normalized_role,
+            existing_target_role=membership_row["role"] if membership_row is not None else None,
         )
         status: Literal["created", "updated"]
         if membership_row is None:
@@ -792,17 +866,76 @@ def get_blob_metadata(connection: sqlite3.Connection, *, blob_id: str) -> sqlite
     return blob_row
 
 
-def get_dashboard_counts(connection: sqlite3.Connection) -> dict[str, int]:
-    row = connection.execute(
-        """
-        SELECT
-            (SELECT COUNT(*) FROM stores) AS total_stores,
-            (SELECT COUNT(*) FROM users) AS total_users,
-            (SELECT COUNT(*) FROM users WHERE is_banned = 1) AS banned_users,
-            (SELECT COUNT(*) FROM store_memberships WHERE revoked_at IS NULL) AS total_memberships,
-            (SELECT COUNT(*) FROM devices) AS total_devices
-        """
-    ).fetchone()
+def get_dashboard_counts(
+    connection: sqlite3.Connection,
+    *,
+    scoped_store_ids: frozenset[str] | None = None,
+) -> dict[str, int]:
+    normalized_scope = _normalize_scoped_store_ids(scoped_store_ids)
+    if normalized_scope is not None and not normalized_scope:
+        return {
+            "total_stores": 0,
+            "total_users": 0,
+            "banned_users": 0,
+            "total_memberships": 0,
+            "total_devices": 0,
+        }
+
+    if normalized_scope is None:
+        row = connection.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM stores) AS total_stores,
+                (SELECT COUNT(*) FROM users) AS total_users,
+                (SELECT COUNT(*) FROM users WHERE is_banned = 1) AS banned_users,
+                (SELECT COUNT(*) FROM store_memberships WHERE revoked_at IS NULL) AS total_memberships,
+                (SELECT COUNT(*) FROM devices) AS total_devices
+            """
+        ).fetchone()
+    else:
+        placeholders = ", ".join(["?"] * len(normalized_scope))
+        row = connection.execute(
+            f"""
+            SELECT
+                (
+                    SELECT COUNT(*)
+                    FROM stores
+                    WHERE store_id IN ({placeholders})
+                ) AS total_stores,
+                (
+                    SELECT COUNT(DISTINCT store_memberships.user_id)
+                    FROM store_memberships
+                    WHERE store_memberships.revoked_at IS NULL
+                      AND store_memberships.store_id IN ({placeholders})
+                ) AS total_users,
+                (
+                    SELECT COUNT(DISTINCT users.user_id)
+                    FROM users
+                    JOIN store_memberships ON store_memberships.user_id = users.user_id
+                    WHERE users.is_banned = 1
+                      AND store_memberships.revoked_at IS NULL
+                      AND store_memberships.store_id IN ({placeholders})
+                ) AS banned_users,
+                (
+                    SELECT COUNT(*)
+                    FROM store_memberships
+                    WHERE revoked_at IS NULL
+                      AND store_id IN ({placeholders})
+                ) AS total_memberships,
+                (
+                    SELECT COUNT(*)
+                    FROM devices
+                    WHERE store_id IN ({placeholders})
+                ) AS total_devices
+            """,
+            (
+                *normalized_scope,
+                *normalized_scope,
+                *normalized_scope,
+                *normalized_scope,
+                *normalized_scope,
+            ),
+        ).fetchone()
     if row is None:
         return {
             "total_stores": 0,
@@ -827,9 +960,20 @@ def list_users_directory(
     banned_only: bool,
     page: int,
     page_size: int,
+    scoped_store_ids: frozenset[str] | None = None,
 ) -> dict[str, object]:
     normalized_query = query.strip().lower()
     offset = (page - 1) * page_size
+    normalized_scope = _normalize_scoped_store_ids(scoped_store_ids)
+    if normalized_scope is not None and not normalized_scope:
+        return {
+            "items": [],
+            "total": 0,
+            "page": page,
+            "page_size": page_size,
+            "has_next": False,
+            "has_prev": page > 1,
+        }
 
     where_clauses = ["1 = 1"]
     params: list[object] = []
@@ -849,6 +993,20 @@ def list_users_directory(
             """
         )
         params.extend([like_query, like_query, like_query, like_query])
+    if normalized_scope is not None:
+        placeholders = ", ".join(["?"] * len(normalized_scope))
+        where_clauses.append(
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM store_memberships scoped_memberships
+                WHERE scoped_memberships.user_id = users.user_id
+                  AND scoped_memberships.revoked_at IS NULL
+                  AND scoped_memberships.store_id IN ({placeholders})
+            )
+            """
+        )
+        params.extend(normalized_scope)
 
     where_sql = " AND ".join(where_clauses)
     total_row = connection.execute(
@@ -909,7 +1067,15 @@ def list_users_directory(
     }
 
 
-def get_user_detail(connection: sqlite3.Connection, *, user_id: str) -> dict[str, object]:
+def get_user_detail(
+    connection: sqlite3.Connection,
+    *,
+    user_id: str,
+    scoped_store_ids: frozenset[str] | None = None,
+) -> dict[str, object]:
+    normalized_scope = _normalize_scoped_store_ids(scoped_store_ids)
+    if normalized_scope is not None and not normalized_scope:
+        raise HTTPException(status_code=404, detail="user_not_found")
     user_row = connection.execute(
         """
         SELECT
@@ -944,8 +1110,16 @@ def get_user_detail(connection: sqlite3.Connection, *, user_id: str) -> dict[str
         (user_id,),
     ).fetchall()
 
+    scope_filter_sql = ""
+    scope_params: tuple[str, ...] = ()
+    if normalized_scope is not None:
+        scope_filter_sql = "AND store_memberships.store_id IN ({})".format(
+            ", ".join(["?"] * len(normalized_scope))
+        )
+        scope_params = normalized_scope
+
     membership_rows = connection.execute(
-        """
+        f"""
         SELECT
             store_memberships.membership_id,
             store_memberships.store_id,
@@ -958,10 +1132,14 @@ def get_user_detail(connection: sqlite3.Connection, *, user_id: str) -> dict[str
         JOIN stores ON stores.store_id = store_memberships.store_id
         WHERE store_memberships.user_id = ?
           AND store_memberships.revoked_at IS NULL
+          {scope_filter_sql}
         ORDER BY store_memberships.created_at ASC
         """,
-        (user_id,),
+        (user_id, *scope_params),
     ).fetchall()
+
+    if normalized_scope is not None and not membership_rows:
+        raise HTTPException(status_code=404, detail="user_not_found")
 
     return {
         "user": {
@@ -1003,7 +1181,12 @@ def list_stores_with_counts(
     connection: sqlite3.Connection,
     *,
     include_inactive: bool,
+    scoped_store_ids: frozenset[str] | None = None,
 ) -> list[dict[str, object]]:
+    normalized_scope = _normalize_scoped_store_ids(scoped_store_ids)
+    if normalized_scope is not None and not normalized_scope:
+        return []
+
     query = """
         SELECT
             stores.store_id,
@@ -1025,12 +1208,19 @@ def list_stores_with_counts(
             ) AS device_count
         FROM stores
     """
-    params: tuple[object, ...] = ()
+    filters: list[str] = []
+    params: list[object] = []
     if not include_inactive:
-        query += " WHERE stores.is_active = 1"
+        filters.append("stores.is_active = 1")
+    if normalized_scope is not None:
+        placeholders = ", ".join(["?"] * len(normalized_scope))
+        filters.append(f"stores.store_id IN ({placeholders})")
+        params.extend(normalized_scope)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY stores.created_at ASC"
 
-    rows = connection.execute(query, params).fetchall()
+    rows = connection.execute(query, tuple(params)).fetchall()
     return [
         {
             "store_id": row["store_id"],
@@ -1051,7 +1241,11 @@ def get_store_detail(
     *,
     store_id: str,
     online_threshold_seconds: int,
+    scoped_store_ids: frozenset[str] | None = None,
 ) -> dict[str, object]:
+    normalized_scope = _normalize_scoped_store_ids(scoped_store_ids)
+    if normalized_scope is not None and store_id not in normalized_scope:
+        raise HTTPException(status_code=404, detail="Store not found")
     store = read_store(connection, store_id=store_id)
     member_rows = connection.execute(
         """
@@ -1133,8 +1327,13 @@ def list_devices(
     *,
     online_threshold_seconds: int,
     store_id: str | None,
+    scoped_store_ids: frozenset[str] | None = None,
 ) -> list[dict[str, object]]:
-    params: tuple[object, ...] = ()
+    normalized_scope = _normalize_scoped_store_ids(scoped_store_ids)
+    if normalized_scope is not None and not normalized_scope:
+        return []
+
+    params: list[object] = []
     query = """
         SELECT
             devices.device_id,
@@ -1149,11 +1348,18 @@ def list_devices(
         FROM devices
         LEFT JOIN stores ON stores.store_id = devices.store_id
     """
+    filters: list[str] = []
     if store_id:
-        query += " WHERE devices.store_id = ?"
-        params = (store_id,)
+        filters.append("devices.store_id = ?")
+        params.append(store_id)
+    if normalized_scope is not None:
+        placeholders = ", ".join(["?"] * len(normalized_scope))
+        filters.append(f"devices.store_id IN ({placeholders})")
+        params.extend(normalized_scope)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY devices.created_at DESC"
-    rows = connection.execute(query, params).fetchall()
+    rows = connection.execute(query, tuple(params)).fetchall()
 
     now_utc = datetime.now(timezone.utc)
     items: list[dict[str, object]] = []
@@ -1186,7 +1392,9 @@ def get_device_detail(
     *,
     device_id: str,
     online_threshold_seconds: int,
+    scoped_store_ids: frozenset[str] | None = None,
 ) -> dict[str, object]:
+    normalized_scope = _normalize_scoped_store_ids(scoped_store_ids)
     row = connection.execute(
         """
         SELECT
@@ -1207,6 +1415,10 @@ def get_device_detail(
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Device not found")
+    if normalized_scope is not None:
+        store_id = row["store_id"]
+        if store_id is None or store_id not in normalized_scope:
+            raise HTTPException(status_code=404, detail="Device not found")
 
     status = get_device_status(
         connection,

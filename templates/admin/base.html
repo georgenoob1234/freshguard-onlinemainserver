@@ -19,18 +19,26 @@
         <a class="nav__link{% if request.url.path == '/admin' %} nav__link--active{% endif %}" href="/admin">
           {{ t('nav_dashboard') }}
         </a>
+        {% if nav_permissions and nav_permissions.users %}
         <a class="nav__link{% if '/admin/users' in request.url.path %} nav__link--active{% endif %}" href="/admin/users">
           {{ t('nav_users') }}
         </a>
+        {% endif %}
+        {% if nav_permissions and nav_permissions.stores %}
         <a class="nav__link{% if '/admin/stores' in request.url.path %} nav__link--active{% endif %}" href="/admin/stores">
           {{ t('nav_stores') }}
         </a>
+        {% endif %}
+        {% if nav_permissions and nav_permissions.devices %}
         <a class="nav__link{% if '/admin/devices' in request.url.path %} nav__link--active{% endif %}" href="/admin/devices">
           {{ t('nav_devices') }}
         </a>
+        {% endif %}
+        {% if nav_permissions and nav_permissions.enroll_tokens %}
         <a class="nav__link{% if '/admin/enroll-tokens' in request.url.path %} nav__link--active{% endif %}" href="/admin/enroll-tokens">
           {{ t('nav_enroll_tokens') }}
         </a>
+        {% endif %}
       </nav>
 
       <div class="header-actions">

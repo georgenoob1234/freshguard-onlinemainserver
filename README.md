@@ -1,5 +1,55 @@
 # OnlineMainServer
 
+OnlineMainServer (OMS) is a FastAPI service for registering connector devices, ingesting scan results, brokering WebSocket commands and blobs, and exposing admin and bot HTTP APIs backed by SQLite.
+
+## Features
+
+The sections below document env vars, run instructions, and API examples. This list calls out capabilities that are easy to miss or only appear implicitly elsewhere.
+
+### Platform and security
+
+- **Database lifecycle**: SQLite schema is created/updated on startup (`init_db`); Docker and local runs both rely on this.
+- **Role-based access control**: Permissions for bot users come from `ROLES_CONFIG_PATH` (default `./config/roles.json`), loaded at startup. Notification settings and bot endpoints enforce these roles.
+- **Static assets**: Files under the project `static/` directory are served at `/static`.
+- **Production mode**: If `APP_ENV` or `ENVIRONMENT` is `prod` or `production`, the browser admin session cookie is marked `Secure`, and `TGBOT_SERVICE_TOKEN` plus `OMS_ADMIN_SESSION_SECRET` must be set or the app will not start.
+- **Custom validation errors** for `POST /update`: invalid envelopes return `400` with `{"detail":"Invalid update envelope.","errors":[...]}` instead of the generic FastAPI `422` shape.
+
+### Background behavior
+
+- **Blob retention**: A background loop deletes blob files and DB rows past `BLOB_RETENTION_SECONDS`, on the interval `BLOB_CLEANUP_INTERVAL_SECONDS`.
+- **Notifications** (when `NOTIFICATIONS_ENABLED`): a status monitor tracks device online/offline for notification rules; a delivery worker batches pushes to tgbot when `NOTIFICATION_PUSH_BASE_URL` is set; stale deliveries are reconciled on startup (see [Notification architecture](#notification-architecture-milestone-6)).
+
+### Admin HTTP API (`/admin/v1/*`, `X-ADMIN-KEY`)
+
+Documented in part below; additionally:
+
+- **Stores**: `GET /admin/v1/stores` (optional `include_inactive`), `GET /admin/v1/stores/{store_id}`, `PATCH /admin/v1/stores/{store_id}` for updates and active flag (deactivating a store with registered devices is allowed but logged).
+- **Memberships**: `PUT /admin/v1/users/{user_id}/stores/{store_id}/membership` to create or update a user’s store membership and role, optionally setting their active store.
+- **User lookup**: `GET /admin/v1/users/lookup` returns `409` with `ambiguous_username` and candidate list when a username matches more than one user.
+
+### Browser admin UI (`/admin/*`)
+
+Session-based UI (not `X-ADMIN-KEY`). Optional first-time admin via `OMS_ADMIN_BOOTSTRAP_USERNAME` / `OMS_ADMIN_BOOTSTRAP_PASSWORD` when no admin account exists.
+
+- **Pages**: login/logout, dashboard summary, users (list, search, detail, ban/unban, membership management), stores (list, create, detail, update, memberships), devices (list, detail), enroll tokens (list, create).
+- **Internationalization**: Russian (default) and English; language is switched via `GET /admin/set-language` (cookie-backed). UI strings are translated in-app.
+
+### Bot service API (`/bot/v1/*`, `Authorization: Bearer <TGBOT_SERVICE_TOKEN>`)
+
+Besides health, session, and notification endpoints documented below:
+
+- **Invites**: `POST /bot/v1/invites/create`, `POST /bot/v1/invites/redeem`.
+- **Stores and devices**: `GET /bot/v1/stores`, `GET /bot/v1/stores/{store_id}/devices`.
+- **User context**: `POST /bot/v1/context/active_store`, `POST /bot/v1/context/active_device` for the bot user’s active store/device selection.
+- **Scan results**: `GET /bot/v1/results/last` (latest result in the active store), `GET /bot/v1/devices/{device_id}/results/last` (latest for a device in the active store); both require the appropriate result-read permission.
+- **Device status (bot)**: `GET /bot/v1/devices/{device_id}/status` — same online/connected semantics as admin, plus permission-derived hints such as whether the user may request a photo or tare (for UI gating).
+- **Device commands (async)**: `POST /bot/v1/devices/{device_id}/commands` records a command, delivers it over the connector WebSocket, and returns when the device responds (with timeout). Use `GET /bot/v1/commands/{command_id}` to poll status by `command_id` for commands tied to that user. For `camera.capture` successes, `GET /bot/v1/commands/{command_id}/photo` returns the image bytes when ready.
+- **Membership exit**: `POST /bot/v1/memberships/revoke_self` lets a bot user leave a store membership according to server rules.
+
+### Connector realtime
+
+- **WebSocket heartbeats**: `WS_HEARTBEAT_TIMEOUT_SECONDS` controls how long the server waits for connector heartbeat traffic before treating the connection as timed out (see server logs / `realtime` module behavior).
+
 ## Environment variables
 
 Set these before starting the app:

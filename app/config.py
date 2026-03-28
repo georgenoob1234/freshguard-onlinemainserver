@@ -12,6 +12,9 @@ class Settings:
     admin_bootstrap_username: str
     admin_bootstrap_password: str
     tgbot_service_token: str
+    telegram_bot_token: str
+    telegram_bot_username: str
+    public_base_url: str
     database_path: str
     roles_config_path: str
     blob_storage_dir: str
@@ -31,6 +34,9 @@ class Settings:
     notification_push_timeout_seconds: float
     notification_push_poll_interval_seconds: float
     notification_status_poll_interval_seconds: float
+    admin_telegram_login_challenge_ttl_seconds: int
+    admin_telegram_login_token_ttl_seconds: int
+    telegram_webapp_auth_max_age_seconds: int
 
 
 def _read_positive_float_env(var_name: str, default: float) -> float:
@@ -89,8 +95,11 @@ def get_settings() -> Settings:
 
     runtime_environment = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "")).strip().lower()
     tgbot_service_token = os.getenv("TGBOT_SERVICE_TOKEN", "")
+    telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if runtime_environment in {"prod", "production"} and not tgbot_service_token:
         raise RuntimeError("TGBOT_SERVICE_TOKEN environment variable is required in production")
+    if runtime_environment in {"prod", "production"} and not telegram_bot_token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN environment variable is required in production")
     admin_session_secret = os.getenv("OMS_ADMIN_SESSION_SECRET", "").strip()
     if runtime_environment in {"prod", "production"} and not admin_session_secret:
         raise RuntimeError("OMS_ADMIN_SESSION_SECRET environment variable is required in production")
@@ -102,6 +111,9 @@ def get_settings() -> Settings:
         admin_bootstrap_username=os.getenv("OMS_ADMIN_BOOTSTRAP_USERNAME", "").strip(),
         admin_bootstrap_password=os.getenv("OMS_ADMIN_BOOTSTRAP_PASSWORD", ""),
         tgbot_service_token=tgbot_service_token,
+        telegram_bot_token=telegram_bot_token,
+        telegram_bot_username=os.getenv("TELEGRAM_BOT_USERNAME", "").strip(),
+        public_base_url=os.getenv("PUBLIC_BASE_URL", "").strip(),
         database_path=os.getenv("DATABASE_PATH", "./data/onlinemainserver.db"),
         roles_config_path=os.getenv("ROLES_CONFIG_PATH", "./config/roles.json"),
         blob_storage_dir=os.getenv("BLOB_STORAGE_DIR", "./data/blobs"),
@@ -163,5 +175,17 @@ def get_settings() -> Settings:
         notification_status_poll_interval_seconds=_read_positive_float_env(
             "NOTIFICATION_STATUS_POLL_INTERVAL_SECONDS",
             2.0,
+        ),
+        admin_telegram_login_challenge_ttl_seconds=_read_positive_int_env(
+            "ADMIN_TELEGRAM_LOGIN_CHALLENGE_TTL_SECONDS",
+            300,
+        ),
+        admin_telegram_login_token_ttl_seconds=_read_positive_int_env(
+            "ADMIN_TELEGRAM_LOGIN_TOKEN_TTL_SECONDS",
+            300,
+        ),
+        telegram_webapp_auth_max_age_seconds=_read_positive_int_env(
+            "TELEGRAM_WEBAPP_AUTH_MAX_AGE_SECONDS",
+            300,
         ),
     )

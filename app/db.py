@@ -463,6 +463,35 @@ def init_db(database_path: str) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_staff_invites_created_by
             ON staff_invites(created_by_user_id);
+
+            CREATE TABLE IF NOT EXISTS telegram_admin_login_challenges (
+                challenge_id TEXT PRIMARY KEY,
+                nonce TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                claimed_user_id TEXT NULL,
+                claimed_provider_user_id TEXT NULL,
+                claimed_at TEXT NULL,
+                completed_at TEXT NULL,
+                FOREIGN KEY(claimed_user_id) REFERENCES users(user_id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS telegram_admin_login_completion_tokens (
+                token_id TEXT PRIMARY KEY,
+                challenge_id TEXT NOT NULL UNIQUE,
+                token_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                used_at TEXT NULL,
+                FOREIGN KEY(challenge_id) REFERENCES telegram_admin_login_challenges(challenge_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tg_admin_login_challenges_status_expires
+            ON telegram_admin_login_challenges(status, expires_at);
+
+            CREATE INDEX IF NOT EXISTS idx_tg_admin_login_tokens_expires
+            ON telegram_admin_login_completion_tokens(expires_at);
             """
         )
         _migrate_scan_results_scan_id_to_image_id(connection)

@@ -39,6 +39,20 @@
       </div>
     </form>
 
+    <div class="form-actions" style="border-top: 1px solid var(--color-border); margin-top: 1rem; padding-top: 1rem;">
+      <button
+        type="button"
+        class="btn btn--secondary btn--lg"
+        style="width: 100%;"
+        id="telegram-login-btn"
+      >
+        {{ t('button_login_via_telegram') }}
+      </button>
+      <p class="form-label__hint" style="margin-top: 0.5rem; text-align: center;" id="telegram-login-hint">
+        {{ t('hint_login_via_telegram') }}
+      </p>
+    </div>
+
     <div class="login-card__footer">
       <span>{{ t('switch_language') }}:</span>
       {% if locale == 'ru' %}
@@ -48,5 +62,27 @@
       {% endif %}
     </div>
   </div>
+  <script>
+    async function startTelegramLogin() {
+      const btn = document.getElementById('telegram-login-btn');
+      const hint = document.getElementById('telegram-login-hint');
+      btn.disabled = true;
+      hint.textContent = '{{ t('hint_telegram_opening') }}';
+      try {
+        const response = await fetch('/admin/auth/telegram/challenge/start', { method: 'POST' });
+        if (!response.ok) {
+          hint.textContent = '{{ t('error_telegram_login_failed') }}';
+          btn.disabled = false;
+          return;
+        }
+        const payload = await response.json();
+        window.location.href = payload.deep_link;
+      } catch (_error) {
+        hint.textContent = '{{ t('error_telegram_login_failed') }}';
+        btn.disabled = false;
+      }
+    }
+    document.getElementById('telegram-login-btn').addEventListener('click', startTelegramLogin);
+  </script>
 </body>
 </html>

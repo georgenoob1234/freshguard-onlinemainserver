@@ -11,6 +11,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
+from app.admin_telegram_auth import claim_browser_login_challenge
 from app.auth import BotService, resolve_authenticated_bot_service
 from app.config import get_settings
 from app.db import get_db, open_connection, rollback_quietly
@@ -21,6 +22,8 @@ from app.models import (
     BotDeviceSummary,
     BotDeviceCommandRequest,
     BotDeviceCommandResponse,
+    BotAdminUiLoginClaimRequest,
+    BotAdminUiLoginClaimResponse,
     BotHealthResponse,
     BotInviteCreateRequest,
     BotInviteCreateResponse,
@@ -947,6 +950,29 @@ def bot_health(
     _: BotService = Depends(resolve_authenticated_bot_service),
 ) -> BotHealthResponse:
     return BotHealthResponse(ok=True)
+
+
+@router.post("/admin-ui/login/claim", response_model=BotAdminUiLoginClaimResponse)
+def claim_admin_ui_login_challenge(
+    payload: BotAdminUiLoginClaimRequest,
+    _: BotService = Depends(resolve_authenticated_bot_service),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> BotAdminUiLoginClaimResponse:
+    settings = get_settings()
+    claim = claim_browser_login_challenge(
+        connection,
+        nonce=payload.nonce,
+        provider_user_id=payload.provider_user_id,
+        secret_salt=settings.secret_salt,
+        token_ttl_seconds=settings.admin_telegram_login_token_ttl_seconds,
+    )
+    completion_path = f"/admin/login/telegram/complete?token={claim.token}"
+    base_url = settings.public_base_url.rstrip("/")
+    completion_url = f"{base_url}{completion_path}" if base_url else completion_path
+    return BotAdminUiLoginClaimResponse(
+        completion_url=completion_url,
+        expires_at=claim.expires_at,
+    )
 
 
 @router.post("/session/ensure", response_model=BotSessionEnsureResponse)

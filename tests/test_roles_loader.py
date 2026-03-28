@@ -8,6 +8,7 @@ import pytest
 from app.roles import (
     RolesConfigError,
     clear_roles_cache,
+    get_role_priority,
     get_role_permissions,
     is_known_role,
     is_permission_granted,
@@ -34,9 +35,18 @@ def test_roles_loader_loads_valid_roles(tmp_path: Path, monkeypatch: pytest.Monk
         roles_path,
         {
             "roles": {
-                "root": ["*"],
-                "operator": ["devices.list", "devices.status.read"],
-                "viewer": ["devices.status.read"],
+                "root": {
+                    "priority": 0,
+                    "permissions": ["*"],
+                },
+                "operator": {
+                    "priority": 20,
+                    "permissions": ["devices.list", "devices.status.read"],
+                },
+                "viewer": {
+                    "priority": 40,
+                    "permissions": ["devices.status.read"],
+                },
             }
         },
     )
@@ -51,6 +61,7 @@ def test_roles_loader_loads_valid_roles(tmp_path: Path, monkeypatch: pytest.Monk
     assert is_permission_granted("operator", "devices.list") is True
     assert is_permission_granted("operator", "devices.delete") is False
     assert is_permission_granted("root", "anything") is True
+    assert get_role_priority("operator") == 20
 
 
 def test_roles_loader_fails_when_roles_key_is_missing(
@@ -71,7 +82,10 @@ def test_roles_loader_fails_when_roles_key_is_missing(
         (
             {
                 "roles": {
-                    "operator": ["devices.list"],
+                    "operator": {
+                        "priority": 10,
+                        "permissions": ["devices.list"],
+                    },
                 }
             },
             'define a "root" role',
@@ -79,10 +93,24 @@ def test_roles_loader_fails_when_roles_key_is_missing(
         (
             {
                 "roles": {
-                    "root": ["devices.list"],
+                    "root": {
+                        "priority": 0,
+                        "permissions": ["devices.list"],
+                    },
                 }
             },
             'must include "\\*"',
+        ),
+        (
+            {
+                "roles": {
+                    "root": {
+                        "priority": 10,
+                        "permissions": ["*"],
+                    },
+                }
+            },
+            'must have priority 0',
         ),
     ],
 )
@@ -114,3 +142,8 @@ def test_default_roles_config_includes_milestone_2_permissions(monkeypatch: pyte
     assert is_permission_granted("auditor", "results.read.history") is True
     assert is_permission_granted("operator", "notifications.access") is True
     assert is_permission_granted("operator", "notifications.defect_detected") is True
+    assert is_permission_granted("store_admin", "admin_ui.access") is True
+    assert is_permission_granted("operator", "admin_ui.access") is False
+    assert get_role_priority("root") == 0
+    assert get_role_priority("store_admin") == 10
+    assert get_role_priority("operator") == 20

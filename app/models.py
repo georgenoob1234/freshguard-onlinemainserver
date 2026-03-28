@@ -226,6 +226,28 @@ class BotHealthResponse(StrictModel):
     ok: bool
 
 
+class AdminTelegramMiniAppLoginRequest(StrictModel):
+    init_data: str = Field(min_length=1)
+
+    @field_validator("init_data")
+    @classmethod
+    def validate_init_data(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("init_data must not be empty")
+        return trimmed
+
+
+class AdminTelegramMiniAppLoginResponse(StrictModel):
+    redirect: str = "/admin"
+
+
+class AdminTelegramChallengeStartResponse(StrictModel):
+    challenge_id: str
+    deep_link: str
+    expires_at: str
+
+
 class BotActorRequest(StrictModel):
     provider: str = Field(min_length=1)
     provider_user_id: str = Field(min_length=1)
@@ -237,6 +259,24 @@ class BotActorRequest(StrictModel):
         if not trimmed:
             raise ValueError("value must not be empty")
         return trimmed
+
+
+class BotAdminUiLoginClaimRequest(StrictModel):
+    nonce: str = Field(min_length=1)
+    provider_user_id: str = Field(min_length=1)
+
+    @field_validator("nonce", "provider_user_id")
+    @classmethod
+    def validate_required_strings(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("value must not be empty")
+        return trimmed
+
+
+class BotAdminUiLoginClaimResponse(StrictModel):
+    completion_url: str
+    expires_at: str
 
 
 class BotInviteCreateRequest(BotActorRequest):

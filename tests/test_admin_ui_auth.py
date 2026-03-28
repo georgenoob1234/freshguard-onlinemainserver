@@ -152,3 +152,9 @@ def test_russian_explicit_via_query_param(client: TestClient):
     assert response.status_code == 200
     assert 'lang="ru"' in response.text
     assert "Вход в панель управления" in response.text
+
+
+def test_login_page_shows_telegram_login_button(client: TestClient):
+    response = client.get("/admin/login")
+    assert response.status_code == 200
+    assert "Войти через Telegram" in response.text
