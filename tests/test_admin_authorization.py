@@ -119,6 +119,46 @@ def _login_via_miniapp(
     return token
 
 
+def _login_bootstrap(client: TestClient) -> None:
+    response = client.post(
+        "/admin/login",
+        data={"username": "superadmin", "password": "super-password"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin"
+
+
+def _register_device(client: TestClient, *, store_id: str) -> str:
+    enroll_response = client.post(
+        "/admin/v1/enroll_tokens",
+        json={
+            "store_id": store_id,
+            "expires_in_sec": 600,
+            "max_uses": 1,
+            "note": "pairing",
+        },
+        headers=_admin_headers(),
+    )
+    assert enroll_response.status_code == 200
+    enroll_token = enroll_response.json()["enroll_token"]
+
+    register_response = client.post(
+        "/connector/v1/register",
+        json={
+            "enroll_token": enroll_token,
+            "device_info": {
+                "label": "Scope Device",
+                "hostname": "scope-device",
+                "os": "linux",
+                "connector_version": "1.0.0",
+            },
+        },
+    )
+    assert register_response.status_code == 200
+    return register_response.json()["device_id"]
+
+
 def test_miniapp_login_creates_session_and_applies_store_scope(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -297,3 +337,224 @@ def test_miniapp_logout_revokes_webapp_token(
     )
     assert stores_response.status_code == 303
     assert stores_response.headers["location"] == "/admin/login"
+
+
+def test_store_root_is_scoped_and_cannot_access_other_store_resources(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store_a = _create_store(client, display_name="Scoped Root Store A")
+    store_b = _create_store(client, display_name="Hidden Store B")
+    actor = _ensure_bot_user(
+        client,
+        provider_user_id="55501",
+        provider_chat_id="chat-55501",
+        username="root_scope_actor",
+        display_name="Root Scope Actor",
+    )
+    target = _ensure_bot_user(
+        client,
+        provider_user_id="55502",
+        provider_chat_id="chat-55502",
+        username="root_scope_target",
+        display_name="Root Scope Target",
+    )
+    _assign_membership(
+        client,
+        user_id=actor["user_id"],
+        store_id=store_a["store_id"],
+        role="root",
+    )
+    _assign_membership(
+        client,
+        user_id=target["user_id"],
+        store_id=store_b["store_id"],
+        role="operator",
+    )
+    device_b_id = _register_device(client, store_id=store_b["store_id"])
+
+    webapp_token = _login_via_miniapp(
+        client,
+        monkeypatch,
+        provider_user_id="55501",
+        username="root_scope_actor",
+    )
+    headers = _webapp_headers(webapp_token)
+
+    stores_response = client.get("/admin/stores?include_inactive=true", headers=headers)
+    assert stores_response.status_code == 200
+    assert "Scoped Root Store A" in stores_response.text
+    assert "Hidden Store B" not in stores_response.text
+
+    hidden_store_detail = client.get(f"/admin/stores/{store_b['store_id']}", headers=headers)
+    assert hidden_store_detail.status_code == 404
+
+    membership_update = client.post(
+        f"/admin/stores/{store_b['store_id']}/memberships",
+        data={
+            "user_id": target["user_id"],
+            "role": "viewer",
+            "set_active_store": "false",
+            "confirm": "yes",
+        },
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert membership_update.status_code == 303
+    assert membership_update.headers["location"].startswith(f"/admin/stores/{store_b['store_id']}?error=")
+
+    device_detail = client.get(f"/admin/devices/{device_b_id}", headers=headers)
+    assert device_detail.status_code == 404
+
+    ban_response = client.post(
+        f"/admin/users/{target['user_id']}/ban",
+        data={
+            "is_banned": "true",
+            "reason": "forbidden",
+            "confirm": "yes",
+        },
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert ban_response.status_code == 303
+    assert ban_response.headers["location"].startswith(f"/admin/users/{target['user_id']}?error=")
+
+
+def test_bootstrap_session_remains_global_superuser(client: TestClient):
+    store_a = _create_store(client, display_name="Bootstrap Store A")
+    store_b = _create_store(client, display_name="Bootstrap Store B")
+    target = _ensure_bot_user(
+        client,
+        provider_user_id="66602",
+        provider_chat_id="chat-66602",
+        username="bootstrap_target",
+        display_name="Bootstrap Target",
+    )
+    _assign_membership(
+        client,
+        user_id=target["user_id"],
+        store_id=store_b["store_id"],
+        role="operator",
+    )
+    device_b_id = _register_device(client, store_id=store_b["store_id"])
+
+    _login_bootstrap(client)
+
+    stores_response = client.get("/admin/stores?include_inactive=true")
+    assert stores_response.status_code == 200
+    assert "Bootstrap Store A" in stores_response.text
+    assert "Bootstrap Store B" in stores_response.text
+
+    store_b_detail = client.get(f"/admin/stores/{store_b['store_id']}")
+    assert store_b_detail.status_code == 200
+
+    device_detail = client.get(f"/admin/devices/{device_b_id}")
+    assert device_detail.status_code == 200
+
+    ban_response = client.post(
+        f"/admin/users/{target['user_id']}/ban",
+        data={
+            "is_banned": "true",
+            "reason": "bootstrap global action",
+            "confirm": "yes",
+        },
+        follow_redirects=False,
+    )
+    assert ban_response.status_code == 303
+    assert ban_response.headers["location"].startswith(f"/admin/users/{target['user_id']}?message=")
+
+
+def test_multi_store_memberships_are_limited_to_assigned_stores(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store_a = _create_store(client, display_name="Scope Store A")
+    store_b = _create_store(client, display_name="Scope Store B")
+    store_c = _create_store(client, display_name="Scope Store C")
+    actor = _ensure_bot_user(
+        client,
+        provider_user_id="77701",
+        provider_chat_id="chat-77701",
+        username="multi_scope_actor",
+        display_name="Multi Scope Actor",
+    )
+    _assign_membership(
+        client,
+        user_id=actor["user_id"],
+        store_id=store_a["store_id"],
+        role="store_admin",
+    )
+    _assign_membership(
+        client,
+        user_id=actor["user_id"],
+        store_id=store_b["store_id"],
+        role="store_admin",
+    )
+    device_b_id = _register_device(client, store_id=store_b["store_id"])
+    device_c_id = _register_device(client, store_id=store_c["store_id"])
+
+    webapp_token = _login_via_miniapp(
+        client,
+        monkeypatch,
+        provider_user_id="77701",
+        username="multi_scope_actor",
+    )
+    headers = _webapp_headers(webapp_token)
+
+    stores_response = client.get("/admin/stores?include_inactive=true", headers=headers)
+    assert stores_response.status_code == 200
+    assert "Scope Store A" in stores_response.text
+    assert "Scope Store B" in stores_response.text
+    assert "Scope Store C" not in stores_response.text
+
+    store_a_detail = client.get(f"/admin/stores/{store_a['store_id']}", headers=headers)
+    assert store_a_detail.status_code == 200
+
+    store_c_detail = client.get(f"/admin/stores/{store_c['store_id']}", headers=headers)
+    assert store_c_detail.status_code == 404
+
+    device_b_detail = client.get(f"/admin/devices/{device_b_id}", headers=headers)
+    assert device_b_detail.status_code == 200
+
+    device_c_detail = client.get(f"/admin/devices/{device_c_id}", headers=headers)
+    assert device_c_detail.status_code == 404
+
+
+def test_store_scoped_admin_cannot_mint_enroll_tokens_for_other_store(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store_a = _create_store(client, display_name="Enroll Scope A")
+    store_b = _create_store(client, display_name="Enroll Scope B")
+    actor = _ensure_bot_user(
+        client,
+        provider_user_id="88801",
+        provider_chat_id="chat-88801",
+        username="enroll_scope_actor",
+        display_name="Enroll Scope Actor",
+    )
+    _assign_membership(
+        client,
+        user_id=actor["user_id"],
+        store_id=store_a["store_id"],
+        role="store_admin",
+    )
+
+    webapp_token = _login_via_miniapp(
+        client,
+        monkeypatch,
+        provider_user_id="88801",
+        username="enroll_scope_actor",
+    )
+    response = client.post(
+        "/admin/enroll-tokens",
+        data={
+            "store_id": store_b["store_id"],
+            "expires_in_sec": "600",
+            "max_uses": "1",
+            "note": "",
+            "confirm": "yes",
+        },
+        headers=_webapp_headers(webapp_token),
+    )
+    assert response.status_code == 403

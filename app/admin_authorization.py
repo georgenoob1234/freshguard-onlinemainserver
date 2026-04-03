@@ -34,17 +34,12 @@ class AdminActor:
         if self.is_bootstrap or self.is_global:
             return True
 
-        if store_id is not None:
-            if store_id not in self.scoped_store_ids:
-                return False
-            roles = self.store_roles.get(store_id, ())
-            return any(is_permission_granted(role, permission) for role in roles)
-
-        for scoped_store_id in self.scoped_store_ids:
-            roles = self.store_roles.get(scoped_store_id, ())
-            if any(is_permission_granted(role, permission) for role in roles):
-                return True
-        return False
+        if store_id is None:
+            return False
+        if store_id not in self.scoped_store_ids:
+            return False
+        roles = self.store_roles.get(store_id, ())
+        return any(is_permission_granted(role, permission) for role in roles)
 
     def ensure_permission(self, permission: str, *, store_id: str | None = None) -> None:
         if not self.has_permission(permission, store_id=store_id):
@@ -137,17 +132,6 @@ def resolve_admin_actor(
         raise HTTPException(status_code=403, detail="user_banned")
 
     store_roles = _load_store_roles(connection, user_id=principal.user_id)
-    is_root = any(role == "root" for roles in store_roles.values() for role in roles)
-    if is_root:
-        return AdminActor(
-            principal=principal,
-            is_bootstrap=False,
-            user_id=principal.user_id,
-            store_roles=store_roles,
-            scoped_store_ids=frozenset(),
-            is_global=True,
-        )
-
     scoped_store_ids = {
         store_id
         for store_id, roles in store_roles.items()

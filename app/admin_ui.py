@@ -81,12 +81,23 @@ def _combine_scopes(*scopes: frozenset[str] | None) -> frozenset[str] | None:
     return combined
 
 
+def _has_any_store_permission(actor: AdminActor, permission: str) -> bool:
+    scope = actor.scoped_store_ids_for_permission(permission)
+    return scope is None or bool(scope)
+
+
+def _has_all_permissions_in_any_store(actor: AdminActor, *permissions: str) -> bool:
+    scope = _combine_scopes(*(actor.scoped_store_ids_for_permission(permission) for permission in permissions))
+    return scope is None or bool(scope)
+
+
 def _nav_permissions(actor: AdminActor) -> dict[str, bool]:
     return {
-        "users": actor.has_permission("users.manage"),
-        "stores": actor.has_permission("stores.read") or actor.has_permission("stores.manage"),
-        "devices": actor.has_permission("devices.list") and actor.has_permission("devices.status.read"),
-        "enroll_tokens": actor.has_permission("devices.manage"),
+        "users": _has_any_store_permission(actor, "users.manage"),
+        "stores": _has_any_store_permission(actor, "stores.read")
+        or _has_any_store_permission(actor, "stores.manage"),
+        "devices": _has_all_permissions_in_any_store(actor, "devices.list", "devices.status.read"),
+        "enroll_tokens": _has_any_store_permission(actor, "devices.manage"),
     }
 
 
@@ -328,9 +339,9 @@ def users_list(
     actor: AdminActor = Depends(require_admin_ui_access),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> HTMLResponse:
-    if not actor.has_permission("users.manage"):
-        raise HTTPException(status_code=403, detail="forbidden")
     scoped_store_ids = actor.scoped_store_ids_for_permission("users.manage")
+    if scoped_store_ids is not None and not scoped_store_ids:
+        raise HTTPException(status_code=403, detail="forbidden")
     normalized_page = max(1, page)
     result = admin_ops.list_users_directory(
         connection,
@@ -365,10 +376,11 @@ def user_detail(
     actor: AdminActor = Depends(require_admin_ui_access),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> HTMLResponse:
-    if not actor.has_permission("users.manage"):
-        raise HTTPException(status_code=403, detail="forbidden")
     users_scope = actor.scoped_store_ids_for_permission("users.manage")
+    if users_scope is not None and not users_scope:
+        raise HTTPException(status_code=403, detail="forbidden")
     roles_scope = actor.scoped_store_ids_for_permission("roles.manage")
+    can_manage_memberships = roles_scope is None or bool(roles_scope)
     detail = admin_ops.get_user_detail(
         connection,
         user_id=user_id,
@@ -391,8 +403,8 @@ def user_detail(
             "stores": stores,
             "message": request.query_params.get("message", ""),
             "error": request.query_params.get("error", ""),
-            "can_manage_user": actor.has_permission("users.manage"),
-            "can_manage_memberships": actor.has_permission("roles.manage"),
+            "can_manage_memberships": can_manage_memberships,
+            "can_ban_user": actor.is_bootstrap,
             "nav_permissions": _nav_permissions(actor),
         },
     )
@@ -410,11 +422,10 @@ def update_user_ban(
 ) -> RedirectResponse:
     locale = resolve_locale(request)
     t = make_translate_for(locale)
-    if not actor.has_permission("users.manage"):
+    if not actor.is_bootstrap:
         return _redirect(f"/admin/users/{user_id}", {"error": t("error_forbidden_action")})
 
-    users_scope = actor.scoped_store_ids_for_permission("users.manage")
-    admin_ops.get_user_detail(connection, user_id=user_id, scoped_store_ids=users_scope)
+    admin_ops.get_user_detail(connection, user_id=user_id, scoped_store_ids=None)
     if confirm != "yes":
         return _redirect(f"/admin/users/{user_id}", {"error": t("flash_confirm_required")})
     payload = AdminUpdateUserBanRequest(is_banned=is_banned, reason=reason)
@@ -791,6 +802,21 @@ def enroll_tokens_submit(
         max_uses=max_uses,
         note=note or None,
     )
+    if not actor.has_permission("devices.manage", store_id=payload.store_id):
+        return _render(
+            request,
+            "admin/enroll_tokens.html",
+            {
+                "page_title": t("page_title_enroll_tokens"),
+                "admin_username": actor.display_name,
+                "stores": stores,
+                "created_token": None,
+                "error": t("error_forbidden_action"),
+                "message": "",
+                "nav_permissions": _nav_permissions(actor),
+            },
+            status_code=403,
+        )
     created = admin_ops.create_enroll_token(
         connection,
         payload=payload,
