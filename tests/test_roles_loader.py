@@ -143,7 +143,9 @@ def test_default_roles_config_includes_milestone_2_permissions(monkeypatch: pyte
     assert is_permission_granted("operator", "notifications.access") is True
     assert is_permission_granted("operator", "notifications.defect_detected") is True
     assert is_permission_granted("store_admin", "admin_ui.access") is True
+    assert is_permission_granted("store_admin", "roles.remove") is True
     assert is_permission_granted("operator", "admin_ui.access") is False
+    assert is_permission_granted("operator", "roles.remove") is False
     assert get_role_priority("root") == 0
     assert get_role_priority("store_admin") == 10
     assert get_role_priority("operator") == 20

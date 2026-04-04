@@ -113,4 +113,73 @@ function copyToken() {
 }
 </script>
 {% endif %}
+
+<div class="card">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('section_enroll_tokens_list') }}</h2>
+  </div>
+  <div class="card__body card__body--no-padding">
+    <div class="table-container">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>{{ t('table_token_id') }}</th>
+            <th>{{ t('table_store') }}</th>
+            <th>{{ t('table_status_short') }}</th>
+            <th>{{ t('table_uses') }}</th>
+            <th>{{ t('table_expires_at') }}</th>
+            <th>{{ t('table_actions') }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for token in tokens %}
+          <tr>
+            <td><code>{{ token.token_id }}</code></td>
+            <td>
+              {% if token.store_id %}
+              <a href="/admin/stores/{{ token.store_id }}">{{ token.store_display_name }}</a>
+              {% else %}
+              <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if token.status == 'active' %}
+              <span class="badge badge--active">{{ t('status_active_short') }}</span>
+              {% elif token.status == 'revoked' %}
+              <span class="badge badge--inactive">{{ t('status_revoked') }}</span>
+              {% elif token.status == 'expired' %}
+              <span class="badge badge--inactive">{{ t('status_expired') }}</span>
+              {% else %}
+              <span class="badge badge--inactive">{{ t('status_exhausted') }}</span>
+              {% endif %}
+            </td>
+            <td>{{ token.uses }} / {{ token.max_uses }}</td>
+            <td>{{ token.expires_at }}</td>
+            <td>
+              {% if token.status == 'active' %}
+              <form method="post" action="/admin/enroll-tokens/{{ token.token_id }}/revoke">
+                <input type="hidden" name="confirm" value="yes">
+                <button type="submit" class="btn btn--sm btn--danger">{{ t('button_revoke') }}</button>
+              </form>
+              {% else %}
+              <span class="text-secondary">-</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+          {% if not tokens %}
+          <tr>
+            <td colspan="6">
+              <div class="empty-state">
+                <svg class="empty-state__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+                <div class="empty-state__title">{{ t('empty_no_enroll_tokens') }}</div>
+              </div>
+            </td>
+          </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
 {% endblock %}

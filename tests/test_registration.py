@@ -178,6 +178,20 @@ def test_register_fails_token_expired(client_and_db):
     assert response.json()["error_code"] == "TOKEN_EXPIRED"
 
 
+def test_register_fails_token_revoked(client_and_db):
+    client, database_path = client_and_db
+    enroll_token = _create_enroll_token(client)
+
+    revoked_at = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("UPDATE enroll_tokens SET revoked_at = ?", (revoked_at,))
+        connection.commit()
+
+    response = client.post("/connector/v1/register", json=_register_payload(enroll_token))
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "TOKEN_REVOKED"
+
+
 def test_register_fails_token_used_up(client_and_db):
     client, _ = client_and_db
     enroll_token = _create_enroll_token(client, max_uses=1)

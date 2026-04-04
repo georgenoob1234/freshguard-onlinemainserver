@@ -380,12 +380,19 @@ def user_detail(
     if users_scope is not None and not users_scope:
         raise HTTPException(status_code=403, detail="forbidden")
     roles_scope = actor.scoped_store_ids_for_permission("roles.manage")
+    remove_scope = actor.scoped_store_ids_for_permission("roles.remove")
     can_manage_memberships = roles_scope is None or bool(roles_scope)
+    can_remove_memberships = remove_scope is None or bool(remove_scope)
     detail = admin_ops.get_user_detail(
         connection,
         user_id=user_id,
         scoped_store_ids=users_scope,
     )
+    for membership in detail["memberships"]:
+        membership["can_remove"] = actor.has_permission(
+            "roles.remove",
+            store_id=membership["store_id"],
+        )
     stores = admin_ops.list_stores_with_counts(
         connection,
         include_inactive=True,
@@ -404,6 +411,7 @@ def user_detail(
             "message": request.query_params.get("message", ""),
             "error": request.query_params.get("error", ""),
             "can_manage_memberships": can_manage_memberships,
+            "can_remove_memberships": can_remove_memberships,
             "can_ban_user": actor.is_bootstrap,
             "nav_permissions": _nav_permissions(actor),
         },
@@ -466,6 +474,34 @@ def upsert_user_membership(
     except Exception:
         # Surface a generic localized error instead of raw exception text
         return _redirect(f"/admin/users/{user_id}", {"error": t("error_confirm_role_change")})
+
+
+@router.post("/users/{user_id}/memberships/revoke")
+def revoke_user_membership(
+    user_id: str,
+    request: Request,
+    store_id: str = Form(default=""),
+    confirm: str = Form(default=""),
+    actor: AdminActor = Depends(require_admin_ui_access),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    locale = resolve_locale(request)
+    t = make_translate_for(locale)
+    if not actor.has_permission("roles.remove", store_id=store_id):
+        return _redirect(f"/admin/users/{user_id}", {"error": t("error_forbidden_action")})
+    if confirm != "yes":
+        return _redirect(f"/admin/users/{user_id}", {"error": t("error_confirm_membership_revoke")})
+    try:
+        admin_ops.revoke_user_store_membership(
+            connection,
+            user_id=user_id,
+            store_id=store_id,
+            actor_user_id=actor.user_id,
+            actor_is_bootstrap=actor.is_bootstrap,
+        )
+    except Exception:
+        return _redirect(f"/admin/users/{user_id}", {"error": t("error_confirm_membership_revoke")})
+    return _redirect(f"/admin/users/{user_id}", {"message": t("flash_membership_revoked")})
 
 
 @router.get("/stores", response_class=HTMLResponse)
@@ -553,14 +589,26 @@ def store_detail(
     )
     can_edit_store = actor.has_permission("stores.manage", store_id=store_id)
     can_manage_memberships = actor.has_permission("roles.manage", store_id=store_id)
+    can_remove_memberships = actor.has_permission("roles.remove", store_id=store_id)
+    can_manage_invites = actor.has_permission("invites.revoke", store_id=store_id)
+    can_view_memberships = can_manage_memberships or can_remove_memberships
     can_view_devices = actor.has_permission("devices.list", store_id=store_id) and actor.has_permission(
         "devices.status.read",
         store_id=store_id,
     )
-    if not can_manage_memberships:
+    if not can_view_memberships:
         detail["members"] = []
     if not can_view_devices:
         detail["devices"] = []
+    invites = (
+        admin_ops.list_staff_invites_for_store(
+            connection,
+            store_id=store_id,
+            scoped_store_ids=None if actor.is_global else actor.scoped_store_ids,
+        )
+        if can_manage_invites
+        else []
+    )
     locale = resolve_locale(request)
     t = make_translate_for(locale)
     return _render(
@@ -572,7 +620,10 @@ def store_detail(
             "detail": detail,
             "can_edit_store": can_edit_store,
             "can_manage_memberships": can_manage_memberships,
+            "can_remove_memberships": can_remove_memberships,
+            "can_manage_invites": can_manage_invites,
             "can_view_devices": can_view_devices,
+            "invites": invites,
             "message": request.query_params.get("message", ""),
             "error": request.query_params.get("error", ""),
             "nav_permissions": _nav_permissions(actor),
@@ -635,6 +686,61 @@ def upsert_store_membership(
         actor_is_bootstrap=actor.is_bootstrap,
     )
     return _redirect(f"/admin/stores/{store_id}", {"message": t("flash_membership_updated")})
+
+
+@router.post("/stores/{store_id}/memberships/revoke")
+def revoke_store_membership(
+    store_id: str,
+    request: Request,
+    user_id: str = Form(default=""),
+    confirm: str = Form(default=""),
+    actor: AdminActor = Depends(require_admin_ui_access),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    locale = resolve_locale(request)
+    t = make_translate_for(locale)
+    if not actor.has_permission("roles.remove", store_id=store_id):
+        return _redirect(f"/admin/stores/{store_id}", {"error": t("error_forbidden_action")})
+    if confirm != "yes":
+        return _redirect(f"/admin/stores/{store_id}", {"error": t("error_confirm_membership_revoke")})
+    try:
+        admin_ops.revoke_user_store_membership(
+            connection,
+            user_id=user_id,
+            store_id=store_id,
+            actor_user_id=actor.user_id,
+            actor_is_bootstrap=actor.is_bootstrap,
+        )
+    except Exception:
+        return _redirect(f"/admin/stores/{store_id}", {"error": t("error_confirm_membership_revoke")})
+    return _redirect(f"/admin/stores/{store_id}", {"message": t("flash_membership_revoked")})
+
+
+@router.post("/stores/{store_id}/invites/{invite_id}/revoke")
+def revoke_store_invite(
+    store_id: str,
+    invite_id: str,
+    request: Request,
+    confirm: str = Form(default=""),
+    actor: AdminActor = Depends(require_admin_ui_access),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    locale = resolve_locale(request)
+    t = make_translate_for(locale)
+    if not actor.has_permission("invites.revoke", store_id=store_id):
+        return _redirect(f"/admin/stores/{store_id}", {"error": t("error_forbidden_action")})
+    if confirm != "yes":
+        return _redirect(f"/admin/stores/{store_id}", {"error": t("error_confirm_invite_revoke")})
+    try:
+        admin_ops.revoke_staff_invite(
+            connection,
+            store_id=store_id,
+            invite_id=invite_id,
+            scoped_store_ids=None if actor.is_global else actor.scoped_store_ids,
+        )
+    except Exception:
+        return _redirect(f"/admin/stores/{store_id}", {"error": t("error_confirm_invite_revoke")})
+    return _redirect(f"/admin/stores/{store_id}", {"message": t("flash_invite_revoked")})
 
 
 @router.get("/devices", response_class=HTMLResponse)
@@ -700,6 +806,7 @@ def device_detail(
         online_threshold_seconds=settings.online_threshold_seconds,
         scoped_store_ids=devices_scope,
     )
+    can_manage_device = actor.has_permission("devices.manage", store_id=detail["store_id"])
     locale = resolve_locale(request)
     t = make_translate_for(locale)
     return _render(
@@ -709,9 +816,37 @@ def device_detail(
             "page_title": t("page_title_device_detail", device_id=device_id),
             "admin_username": actor.display_name,
             "detail": detail,
+            "can_manage_device": can_manage_device,
             "nav_permissions": _nav_permissions(actor),
         },
     )
+
+
+@router.post("/devices/{device_id}/decommission")
+def decommission_device_submit(
+    device_id: str,
+    request: Request,
+    confirm: str = Form(default=""),
+    actor: AdminActor = Depends(require_admin_ui_access),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    locale = resolve_locale(request)
+    t = make_translate_for(locale)
+    if confirm != "yes":
+        return _redirect(f"/admin/devices/{device_id}", {"error": t("flash_confirm_required")})
+    devices_scope = actor.scoped_store_ids_for_permission("devices.manage")
+    if devices_scope is not None and not devices_scope:
+        return _redirect(f"/admin/devices/{device_id}", {"error": t("error_forbidden_action")})
+
+    try:
+        admin_ops.decommission_device(
+            connection,
+            device_id=device_id,
+            scoped_store_ids=devices_scope,
+        )
+    except Exception:
+        return _redirect(f"/admin/devices/{device_id}", {"error": t("error_forbidden_action")})
+    return _redirect(f"/admin/devices/{device_id}", {"message": t("flash_device_decommissioned")})
 
 
 @router.get("/enroll-tokens", response_class=HTMLResponse)
@@ -728,6 +863,7 @@ def enroll_tokens_page(
         include_inactive=False,
         scoped_store_ids=scope,
     )
+    tokens = admin_ops.list_enroll_tokens(connection, scoped_store_ids=scope)
     locale = resolve_locale(request)
     t = make_translate_for(locale)
     return _render(
@@ -737,6 +873,7 @@ def enroll_tokens_page(
             "page_title": t("page_title_enroll_tokens"),
             "admin_username": actor.display_name,
             "stores": stores,
+            "tokens": tokens,
             "created_token": None,
             "message": request.query_params.get("message", ""),
             "error": request.query_params.get("error", ""),
@@ -767,6 +904,7 @@ def enroll_tokens_submit(
                 "page_title": t("page_title_enroll_tokens"),
                 "admin_username": actor.display_name,
                 "stores": [],
+                "tokens": [],
                 "created_token": None,
                 "error": t("error_forbidden_action"),
                 "message": "",
@@ -779,6 +917,7 @@ def enroll_tokens_submit(
         include_inactive=False,
         scoped_store_ids=scope,
     )
+    tokens = admin_ops.list_enroll_tokens(connection, scoped_store_ids=scope)
     locale = resolve_locale(request)
     t = make_translate_for(locale)
     if confirm != "yes":
@@ -789,6 +928,7 @@ def enroll_tokens_submit(
                 "page_title": t("page_title_enroll_tokens"),
                 "admin_username": actor.display_name,
                 "stores": stores,
+                "tokens": tokens,
                 "created_token": None,
                 "error": t("flash_confirm_token_minting"),
                 "message": "",
@@ -810,6 +950,7 @@ def enroll_tokens_submit(
                 "page_title": t("page_title_enroll_tokens"),
                 "admin_username": actor.display_name,
                 "stores": stores,
+                "tokens": tokens,
                 "created_token": None,
                 "error": t("error_forbidden_action"),
                 "message": "",
@@ -822,6 +963,7 @@ def enroll_tokens_submit(
         payload=payload,
         secret_salt=get_settings().secret_salt,
     )
+    tokens = admin_ops.list_enroll_tokens(connection, scoped_store_ids=scope)
     return _render(
         request,
         "admin/enroll_tokens.html",
@@ -829,9 +971,36 @@ def enroll_tokens_submit(
             "page_title": t("page_title_enroll_tokens"),
             "admin_username": actor.display_name,
             "stores": stores,
+            "tokens": tokens,
             "created_token": created.model_dump(),
             "message": t("flash_token_minted"),
             "error": "",
             "nav_permissions": _nav_permissions(actor),
         },
     )
+
+
+@router.post("/enroll-tokens/{token_id}/revoke")
+def revoke_enroll_token(
+    token_id: str,
+    request: Request,
+    confirm: str = Form(default=""),
+    actor: AdminActor = Depends(require_admin_ui_access),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    locale = resolve_locale(request)
+    t = make_translate_for(locale)
+    scope = actor.scoped_store_ids_for_permission("devices.manage")
+    if scope is not None and not scope:
+        return _redirect("/admin/enroll-tokens", {"error": t("error_forbidden_action")})
+    if confirm != "yes":
+        return _redirect("/admin/enroll-tokens", {"error": t("error_confirm_token_revoke")})
+    try:
+        admin_ops.revoke_enroll_token(
+            connection,
+            token_id=token_id,
+            scoped_store_ids=scope,
+        )
+    except Exception:
+        return _redirect("/admin/enroll-tokens", {"error": t("error_confirm_token_revoke")})
+    return _redirect("/admin/enroll-tokens", {"message": t("flash_token_revoked")})

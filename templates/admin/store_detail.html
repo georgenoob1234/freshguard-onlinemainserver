@@ -76,7 +76,7 @@
   </div>
 </div>
 
-{% if can_manage_memberships %}
+{% if can_manage_memberships or can_remove_memberships %}
 <div class="card mb-6">
   <div class="card__header">
     <h2 class="card__title">{{ t('section_members') }}</h2>
@@ -90,6 +90,9 @@
             <th>{{ t('table_role') }}</th>
             <th>{{ t('table_banned') }}</th>
             <th>{{ t('label_created') }}</th>
+            {% if can_remove_memberships %}
+            <th>{{ t('table_actions') }}</th>
+            {% endif %}
           </tr>
         </thead>
         <tbody>
@@ -107,11 +110,20 @@
               {% endif %}
             </td>
             <td>{{ member.created_at }}</td>
+            {% if can_remove_memberships %}
+            <td>
+              <form method="post" action="/admin/stores/{{ detail.store.store_id }}/memberships/revoke">
+                <input type="hidden" name="user_id" value="{{ member.user_id }}">
+                <input type="hidden" name="confirm" value="yes">
+                <button type="submit" class="btn btn--sm btn--danger">{{ t('button_revoke_membership') }}</button>
+              </form>
+            </td>
+            {% endif %}
           </tr>
           {% endfor %}
           {% if not detail.members %}
           <tr>
-            <td colspan="4">
+            <td colspan="{% if can_remove_memberships %}5{% else %}4{% endif %}">
               <div class="empty-state">
                 <svg class="empty-state__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                 <div class="empty-state__title">{{ t('empty_no_members') }}</div>
@@ -125,6 +137,7 @@
   </div>
 </div>
 
+{% if can_manage_memberships %}
 <div class="card mb-6">
   <div class="card__header">
     <h2 class="card__title">{{ t('add_or_update_member') }}</h2>
@@ -158,6 +171,72 @@
   </div>
 </div>
 {% endif %}
+{% endif %}
+
+{% if can_manage_invites %}
+<div class="card mb-6">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('section_staff_invites') }}</h2>
+  </div>
+  <div class="card__body card__body--no-padding">
+    <div class="table-container">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>{{ t('table_invite_id') }}</th>
+            <th>{{ t('table_role') }}</th>
+            <th>{{ t('table_status_short') }}</th>
+            <th>{{ t('table_uses') }}</th>
+            <th>{{ t('table_expires_at') }}</th>
+            <th>{{ t('table_actions') }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for invite in invites %}
+          <tr>
+            <td><code>{{ invite.invite_id }}</code></td>
+            <td>{{ invite.role }}</td>
+            <td>
+              {% if invite.status == 'active' %}
+              <span class="badge badge--active">{{ t('status_active_short') }}</span>
+              {% elif invite.status == 'revoked' %}
+              <span class="badge badge--inactive">{{ t('status_revoked') }}</span>
+              {% elif invite.status == 'expired' %}
+              <span class="badge badge--inactive">{{ t('status_expired') }}</span>
+              {% else %}
+              <span class="badge badge--inactive">{{ t('status_exhausted') }}</span>
+              {% endif %}
+            </td>
+            <td>{{ invite.used_count }} / {{ invite.max_uses }}</td>
+            <td>{{ invite.expires_at }}</td>
+            <td>
+              {% if invite.status == 'active' %}
+              <form method="post" action="/admin/stores/{{ detail.store.store_id }}/invites/{{ invite.invite_id }}/revoke">
+                <input type="hidden" name="confirm" value="yes">
+                <button type="submit" class="btn btn--sm btn--danger">{{ t('button_revoke') }}</button>
+              </form>
+              {% else %}
+              <span class="text-secondary">-</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+          {% if not invites %}
+          <tr>
+            <td colspan="6">
+              <div class="empty-state">
+                <svg class="empty-state__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+                <div class="empty-state__title">{{ t('empty_no_invites') }}</div>
+              </div>
+            </td>
+          </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
 
 {% if can_view_devices %}
 <div class="card">
@@ -170,6 +249,7 @@
         <thead>
           <tr>
             <th>{{ t('table_device_id') }}</th>
+            <th>{{ t('table_status') }}</th>
             <th>{{ t('table_connected') }}</th>
             <th>{{ t('table_online') }}</th>
             <th>{{ t('table_last_seen') }}</th>
@@ -180,6 +260,13 @@
           <tr>
             <td>
               <a href="/admin/devices/{{ device.device_id }}" class="text-secondary">{{ device.device_id[:8] }}...</a>
+            </td>
+            <td>
+              {% if device.is_decommissioned %}
+                <span class="badge badge--inactive">{{ t('status_decommissioned') }}</span>
+              {% else %}
+                <span class="badge badge--active">{{ t('status_active_short') }}</span>
+              {% endif %}
             </td>
             <td>
               {% if device.connected %}
@@ -200,7 +287,7 @@
           {% endfor %}
           {% if not detail.devices %}
           <tr>
-            <td colspan="4">
+            <td colspan="5">
               <div class="empty-state">
                 <svg class="empty-state__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
                 <div class="empty-state__title">{{ t('empty_no_devices') }}</div>

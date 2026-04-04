@@ -567,8 +567,7 @@ def test_list_stores_and_select_active_store(client_and_db):
     items = {item["store_id"]: item for item in list_response.json()["items"]}
     assert items[active_store["store_id"]]["is_active_store"] is True
     assert items[active_store["store_id"]]["store_is_active"] is True
-    assert items[inactive_store["store_id"]]["is_active_store"] is False
-    assert items[inactive_store["store_id"]]["store_is_active"] is False
+    assert inactive_store["store_id"] not in items
 
     select_response = client.post(
         "/bot/v1/context/active_store",
@@ -579,11 +578,8 @@ def test_list_stores_and_select_active_store(client_and_db):
         },
         headers=_bot_headers(),
     )
-    assert select_response.status_code == 200
-    assert select_response.json() == {
-        "active_store_id": inactive_store["store_id"],
-        "active_device_id": None,
-    }
+    assert select_response.status_code == 404
+    assert select_response.json() == {"detail": "store_not_available"}
 
     context_row = _fetch_one(
         database_path,
@@ -595,7 +591,7 @@ def test_list_stores_and_select_active_store(client_and_db):
         (user["user_id"],),
     )
     assert context_row is not None
-    assert context_row["active_store_id"] == inactive_store["store_id"]
+    assert context_row["active_store_id"] == active_store["store_id"]
     assert context_row["active_device_id"] is None
 
 

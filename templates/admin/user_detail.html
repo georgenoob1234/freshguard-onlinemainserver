@@ -130,6 +130,9 @@
             <th>{{ t('table_role') }}</th>
             <th>{{ t('table_store_active') }}</th>
             <th>{{ t('label_created') }}</th>
+            {% if can_remove_memberships %}
+            <th>{{ t('table_actions') }}</th>
+            {% endif %}
           </tr>
         </thead>
         <tbody>
@@ -147,11 +150,24 @@
               {% endif %}
             </td>
             <td>{{ membership.created_at }}</td>
+            {% if can_remove_memberships %}
+            <td>
+              {% if membership.can_remove %}
+              <form method="post" action="/admin/users/{{ detail.user.user_id }}/memberships/revoke">
+                <input type="hidden" name="store_id" value="{{ membership.store_id }}">
+                <input type="hidden" name="confirm" value="yes">
+                <button type="submit" class="btn btn--sm btn--danger">{{ t('button_revoke_membership') }}</button>
+              </form>
+              {% else %}
+              <span class="text-secondary">-</span>
+              {% endif %}
+            </td>
+            {% endif %}
           </tr>
           {% endfor %}
           {% if not detail.memberships %}
           <tr>
-            <td colspan="4">
+            <td colspan="{% if can_remove_memberships %}5{% else %}4{% endif %}">
               <div class="empty-state">
                 <svg class="empty-state__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                 <div class="empty-state__title">{{ t('empty_no_memberships') }}</div>

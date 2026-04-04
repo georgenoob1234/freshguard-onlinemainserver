@@ -30,6 +30,11 @@ from app.models import (
 from app.realtime import connection_manager
 from app.roles import get_role_priority, is_known_role, is_permission_granted
 from app.security import generate_token, hash_token
+from app.user_context import (
+    get_user_context_row as _get_user_context_row,
+    normalize_user_context_after_membership_change,
+    upsert_user_context as _upsert_user_context,
+)
 
 
 @dataclass(frozen=True)
@@ -115,6 +120,33 @@ def _normalize_lookup_username(username: str | None) -> str | None:
     if not trimmed:
         return None
     return trimmed.lstrip("@").lower()
+
+
+def _parse_iso_datetime(raw_value: str | None) -> datetime | None:
+    if raw_value is None:
+        return None
+    parsed = datetime.fromisoformat(raw_value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _derive_lifecycle_status(
+    *,
+    revoked_at: str | None,
+    expires_at: str,
+    used_count: int,
+    max_uses: int,
+    now_utc: datetime,
+) -> str:
+    if revoked_at is not None:
+        return "revoked"
+    if used_count >= max_uses:
+        return "exhausted"
+    expires_at_dt = _parse_iso_datetime(expires_at)
+    if expires_at_dt is not None and expires_at_dt <= now_utc:
+        return "expired"
+    return "active"
 
 
 def _user_lookup_row_to_response(row: sqlite3.Row) -> AdminLookupUserResponse:
@@ -296,6 +328,58 @@ def _assert_membership_update_allowed(
             raise HTTPException(status_code=403, detail="forbidden")
 
 
+def _assert_membership_revoke_allowed(
+    connection: sqlite3.Connection,
+    *,
+    actor_user_id: str | None,
+    actor_is_bootstrap: bool,
+    target_role: str,
+    store_id: str,
+) -> None:
+    if actor_is_bootstrap:
+        return
+    if actor_user_id is None:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    actor_roles = _select_user_active_roles_for_store(
+        connection,
+        user_id=actor_user_id,
+        store_id=store_id,
+    )
+    if not actor_roles:
+        raise HTTPException(status_code=403, detail="forbidden")
+    if not any(is_permission_granted(role_name, "roles.remove") for role_name in actor_roles):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    actor_priority = min(get_role_priority(role_name) for role_name in actor_roles)
+    target_priority = get_role_priority(target_role)
+    if target_priority <= actor_priority:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
+def _select_membership_row_by_id(
+    connection: sqlite3.Connection,
+    *,
+    membership_id: str,
+) -> sqlite3.Row | None:
+    return connection.execute(
+        """
+        SELECT
+            membership_id,
+            user_id,
+            store_id,
+            role,
+            created_at,
+            revoked_at,
+            created_by_user_id,
+            note
+        FROM store_memberships
+        WHERE membership_id = ?
+        """,
+        (membership_id,),
+    ).fetchone()
+
+
 def _membership_row_to_model(row: sqlite3.Row) -> AdminStoreMembership:
     return AdminStoreMembership(
         membership_id=row["membership_id"],
@@ -306,47 +390,6 @@ def _membership_row_to_model(row: sqlite3.Row) -> AdminStoreMembership:
         revoked_at=row["revoked_at"],
         created_by_user_id=row["created_by_user_id"],
         note=row["note"],
-    )
-
-
-def _get_user_context_row(
-    connection: sqlite3.Connection,
-    *,
-    user_id: str,
-) -> sqlite3.Row | None:
-    return connection.execute(
-        """
-        SELECT active_store_id, active_device_id
-        FROM user_context
-        WHERE user_id = ?
-        """,
-        (user_id,),
-    ).fetchone()
-
-
-def _upsert_user_context(
-    connection: sqlite3.Connection,
-    *,
-    user_id: str,
-    active_store_id: str | None,
-    active_device_id: str | None,
-    updated_at: str,
-) -> None:
-    connection.execute(
-        """
-        INSERT INTO user_context (
-            user_id,
-            active_store_id,
-            active_device_id,
-            updated_at
-        )
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            active_store_id = excluded.active_store_id,
-            active_device_id = excluded.active_device_id,
-            updated_at = excluded.updated_at
-        """,
-        (user_id, active_store_id, active_device_id, updated_at),
     )
 
 
@@ -725,6 +768,73 @@ def upsert_user_store_membership(
     )
 
 
+def revoke_user_store_membership(
+    connection: sqlite3.Connection,
+    *,
+    user_id: str,
+    store_id: str,
+    actor_user_id: str | None = None,
+    actor_is_bootstrap: bool = True,
+) -> dict[str, object]:
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        _require_user_row(connection, user_id=user_id)
+        require_store_row(connection, store_id=store_id)
+
+        active_membership_row = _select_active_membership_row(
+            connection,
+            user_id=user_id,
+            store_id=store_id,
+        )
+        if active_membership_row is None:
+            raise HTTPException(status_code=404, detail="membership_not_found")
+
+        _assert_membership_revoke_allowed(
+            connection,
+            actor_user_id=actor_user_id,
+            actor_is_bootstrap=actor_is_bootstrap,
+            target_role=active_membership_row["role"],
+            store_id=store_id,
+        )
+
+        revoked_at = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            """
+            UPDATE store_memberships
+            SET revoked_at = ?
+            WHERE membership_id = ? AND revoked_at IS NULL
+            """,
+            (revoked_at, active_membership_row["membership_id"]),
+        )
+
+        effective_context = normalize_user_context_after_membership_change(
+            connection,
+            user_id=user_id,
+            revoked_store_id=store_id,
+            updated_at=revoked_at,
+        )
+        membership_row = _select_membership_row_by_id(
+            connection,
+            membership_id=active_membership_row["membership_id"],
+        )
+        if membership_row is None:
+            raise HTTPException(status_code=500, detail="Internal server error.")
+
+        connection.commit()
+    except HTTPException:
+        rollback_quietly(connection)
+        raise
+    except Exception as error:
+        rollback_quietly(connection)
+        raise HTTPException(status_code=500, detail="Internal server error.") from error
+
+    return {
+        "membership": _membership_row_to_model(membership_row),
+        "active_store_id": effective_context.active_store_id,
+        "active_device_id": effective_context.active_device_id,
+    }
+
+
 def create_enroll_token(
     connection: sqlite3.Connection,
     *,
@@ -783,6 +893,199 @@ def create_enroll_token(
         expires_at=expires_at.isoformat(),
         max_uses=payload.max_uses,
     )
+
+
+def list_enroll_tokens(
+    connection: sqlite3.Connection,
+    *,
+    scoped_store_ids: frozenset[str] | None = None,
+) -> list[dict[str, object]]:
+    normalized_scope = _normalize_scoped_store_ids(scoped_store_ids)
+    if normalized_scope is not None and not normalized_scope:
+        return []
+
+    query = f"""
+        SELECT
+            enroll_tokens.token_id,
+            enroll_tokens.store_id,
+            enroll_tokens.created_at,
+            enroll_tokens.expires_at,
+            enroll_tokens.max_uses,
+            enroll_tokens.uses,
+            enroll_tokens.note,
+            enroll_tokens.revoked_at,
+            COALESCE(NULLIF(TRIM(stores.display_name), ''), NULLIF(TRIM(stores.name), ''), stores.store_id) AS store_display_name
+        FROM enroll_tokens
+        LEFT JOIN stores ON stores.store_id = enroll_tokens.store_id
+    """
+    params: list[object] = []
+    if normalized_scope is not None:
+        placeholders = ", ".join(["?"] * len(normalized_scope))
+        query += f" WHERE enroll_tokens.store_id IN ({placeholders})"
+        params.extend(normalized_scope)
+    query += " ORDER BY enroll_tokens.created_at DESC, enroll_tokens.token_id DESC"
+
+    now_utc = datetime.now(timezone.utc)
+    rows = connection.execute(query, tuple(params)).fetchall()
+    return [
+        {
+            "token_id": row["token_id"],
+            "store_id": row["store_id"],
+            "store_display_name": row["store_display_name"] or row["store_id"] or "",
+            "created_at": row["created_at"],
+            "expires_at": row["expires_at"],
+            "max_uses": int(row["max_uses"]),
+            "uses": int(row["uses"]),
+            "note": row["note"],
+            "revoked_at": row["revoked_at"],
+            "status": _derive_lifecycle_status(
+                revoked_at=row["revoked_at"],
+                expires_at=row["expires_at"],
+                used_count=int(row["uses"]),
+                max_uses=int(row["max_uses"]),
+                now_utc=now_utc,
+            ),
+        }
+        for row in rows
+    ]
+
+
+def revoke_enroll_token(
+    connection: sqlite3.Connection,
+    *,
+    token_id: str,
+    scoped_store_ids: frozenset[str] | None = None,
+) -> dict[str, object]:
+    normalized_scope = _normalize_scoped_store_ids(scoped_store_ids)
+    row = connection.execute(
+        """
+        SELECT token_id, store_id, revoked_at
+        FROM enroll_tokens
+        WHERE token_id = ?
+        """,
+        (token_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="token_not_found")
+    if normalized_scope is not None:
+        store_id = row["store_id"]
+        if store_id is None or store_id not in normalized_scope:
+            raise HTTPException(status_code=404, detail="token_not_found")
+
+    revoked_at = row["revoked_at"]
+    if revoked_at is None:
+        revoked_at = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            """
+            UPDATE enroll_tokens
+            SET revoked_at = ?
+            WHERE token_id = ? AND revoked_at IS NULL
+            """,
+            (revoked_at, token_id),
+        )
+        connection.commit()
+
+    return {
+        "token_id": row["token_id"],
+        "store_id": row["store_id"],
+        "revoked_at": revoked_at,
+    }
+
+
+def list_staff_invites_for_store(
+    connection: sqlite3.Connection,
+    *,
+    store_id: str,
+    scoped_store_ids: frozenset[str] | None = None,
+) -> list[dict[str, object]]:
+    normalized_scope = _normalize_scoped_store_ids(scoped_store_ids)
+    if normalized_scope is not None and store_id not in normalized_scope:
+        return []
+
+    now_utc = datetime.now(timezone.utc)
+    rows = connection.execute(
+        """
+        SELECT
+            invite_id,
+            store_id,
+            role,
+            created_by_user_id,
+            created_at,
+            expires_at,
+            max_uses,
+            used_count,
+            revoked_at,
+            note
+        FROM staff_invites
+        WHERE store_id = ?
+        ORDER BY created_at DESC, invite_id DESC
+        """,
+        (store_id,),
+    ).fetchall()
+    return [
+        {
+            "invite_id": row["invite_id"],
+            "store_id": row["store_id"],
+            "role": row["role"],
+            "created_by_user_id": row["created_by_user_id"],
+            "created_at": row["created_at"],
+            "expires_at": row["expires_at"],
+            "max_uses": int(row["max_uses"]),
+            "used_count": int(row["used_count"]),
+            "revoked_at": row["revoked_at"],
+            "note": row["note"],
+            "status": _derive_lifecycle_status(
+                revoked_at=row["revoked_at"],
+                expires_at=row["expires_at"],
+                used_count=int(row["used_count"]),
+                max_uses=int(row["max_uses"]),
+                now_utc=now_utc,
+            ),
+        }
+        for row in rows
+    ]
+
+
+def revoke_staff_invite(
+    connection: sqlite3.Connection,
+    *,
+    store_id: str,
+    invite_id: str,
+    scoped_store_ids: frozenset[str] | None = None,
+) -> dict[str, object]:
+    normalized_scope = _normalize_scoped_store_ids(scoped_store_ids)
+    if normalized_scope is not None and store_id not in normalized_scope:
+        raise HTTPException(status_code=404, detail="invite_not_found")
+
+    row = connection.execute(
+        """
+        SELECT invite_id, store_id, revoked_at
+        FROM staff_invites
+        WHERE store_id = ? AND invite_id = ?
+        """,
+        (store_id, invite_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="invite_not_found")
+
+    revoked_at = row["revoked_at"]
+    if revoked_at is None:
+        revoked_at = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            """
+            UPDATE staff_invites
+            SET revoked_at = ?
+            WHERE store_id = ? AND invite_id = ? AND revoked_at IS NULL
+            """,
+            (revoked_at, store_id, invite_id),
+        )
+        connection.commit()
+
+    return {
+        "invite_id": row["invite_id"],
+        "store_id": row["store_id"],
+        "revoked_at": revoked_at,
+    }
 
 
 def list_store_devices(
@@ -1277,7 +1580,8 @@ def get_store_detail(
             os,
             connector_version,
             created_at,
-            last_seen_at
+            last_seen_at,
+            decommissioned_at
         FROM devices
         WHERE store_id = ?
         ORDER BY created_at ASC
@@ -1300,6 +1604,8 @@ def get_store_detail(
                 threshold_seconds=online_threshold_seconds,
             ),
             "last_seen_at": serialize_utc_datetime(parse_db_utc_datetime(row["last_seen_at"])),
+            "decommissioned_at": row["decommissioned_at"],
+            "is_decommissioned": row["decommissioned_at"] is not None,
         }
         for row in device_rows
     ]
@@ -1344,6 +1650,7 @@ def list_devices(
             devices.connector_version,
             devices.created_at,
             devices.last_seen_at,
+            devices.decommissioned_at,
             COALESCE(NULLIF(TRIM(stores.display_name), ''), NULLIF(TRIM(stores.name), ''), stores.store_id) AS store_display_name
         FROM devices
         LEFT JOIN stores ON stores.store_id = devices.store_id
@@ -1382,6 +1689,8 @@ def list_devices(
                     threshold_seconds=online_threshold_seconds,
                 ),
                 "last_seen_at": serialize_utc_datetime(last_seen),
+                "decommissioned_at": row["decommissioned_at"],
+                "is_decommissioned": row["decommissioned_at"] is not None,
             }
         )
     return items
@@ -1406,6 +1715,7 @@ def get_device_detail(
             devices.connector_version,
             devices.created_at,
             devices.last_seen_at,
+            devices.decommissioned_at,
             COALESCE(NULLIF(TRIM(stores.display_name), ''), NULLIF(TRIM(stores.name), ''), stores.store_id) AS store_display_name
         FROM devices
         LEFT JOIN stores ON stores.store_id = devices.store_id
@@ -1434,5 +1744,69 @@ def get_device_detail(
         "os": row["os"],
         "connector_version": row["connector_version"],
         "created_at": row["created_at"],
+        "decommissioned_at": row["decommissioned_at"],
+        "is_decommissioned": row["decommissioned_at"] is not None,
         "status": status.model_dump(),
+    }
+
+
+def decommission_device(
+    connection: sqlite3.Connection,
+    *,
+    device_id: str,
+    scoped_store_ids: frozenset[str] | None = None,
+) -> dict[str, object]:
+    normalized_scope = _normalize_scoped_store_ids(scoped_store_ids)
+    row = connection.execute(
+        """
+        SELECT
+            device_id,
+            store_id,
+            decommissioned_at
+        FROM devices
+        WHERE device_id = ?
+        """,
+        (device_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    if normalized_scope is not None:
+        store_id = row["store_id"]
+        if store_id is None or store_id not in normalized_scope:
+            raise HTTPException(status_code=404, detail="Device not found")
+
+    if row["decommissioned_at"] is None:
+        decommissioned_at = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            """
+            UPDATE devices
+            SET decommissioned_at = ?
+            WHERE device_id = ? AND decommissioned_at IS NULL
+            """,
+            (decommissioned_at, device_id),
+        )
+        connection.execute(
+            """
+            UPDATE user_context
+            SET active_device_id = NULL, updated_at = ?
+            WHERE active_device_id = ?
+            """,
+            (decommissioned_at, device_id),
+        )
+        connection.commit()
+
+    refreshed = connection.execute(
+        """
+        SELECT device_id, store_id, decommissioned_at
+        FROM devices
+        WHERE device_id = ?
+        """,
+        (device_id,),
+    ).fetchone()
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    return {
+        "device_id": refreshed["device_id"],
+        "store_id": refreshed["store_id"],
+        "decommissioned_at": refreshed["decommissioned_at"],
     }

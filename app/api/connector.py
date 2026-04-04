@@ -152,7 +152,7 @@ def register_connector(
 
         enroll_token_row = connection.execute(
             """
-            SELECT token_id, store_id, expires_at
+            SELECT token_id, store_id, expires_at, revoked_at
             FROM enroll_tokens
             WHERE token_hash = ?
             """,
@@ -163,6 +163,11 @@ def register_connector(
             raise RegistrationError(
                 error_code="TOKEN_INVALID",
                 detail="Enroll token was not found.",
+            )
+        if enroll_token_row["revoked_at"] is not None:
+            raise RegistrationError(
+                error_code="TOKEN_REVOKED",
+                detail="Enroll token has been revoked.",
             )
 
         expires_at = datetime.fromisoformat(enroll_token_row["expires_at"])

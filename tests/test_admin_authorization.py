@@ -297,6 +297,202 @@ def test_store_admin_cannot_assign_same_or_higher_priority_role(
     assert elevate_response.status_code == 403
 
 
+def test_store_admin_cannot_revoke_same_priority_membership(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store = _create_store(client, display_name="Revoke Hierarchy Store")
+    actor = _ensure_bot_user(
+        client,
+        provider_user_id="24690",
+        provider_chat_id="chat-24690",
+        username="revoke_hierarchy_actor",
+        display_name="Revoke Hierarchy Actor",
+    )
+    target = _ensure_bot_user(
+        client,
+        provider_user_id="24691",
+        provider_chat_id="chat-24691",
+        username="revoke_hierarchy_target",
+        display_name="Revoke Hierarchy Target",
+    )
+    _assign_membership(
+        client,
+        user_id=actor["user_id"],
+        store_id=store["store_id"],
+        role="store_admin",
+    )
+    _assign_membership(
+        client,
+        user_id=target["user_id"],
+        store_id=store["store_id"],
+        role="store_admin",
+    )
+    actor_token = _login_via_miniapp(
+        client,
+        monkeypatch,
+        provider_user_id="24690",
+        username="revoke_hierarchy_actor",
+    )
+
+    revoke_response = client.post(
+        f"/admin/stores/{store['store_id']}/memberships/revoke",
+        data={"user_id": target["user_id"], "confirm": "yes"},
+        headers=_webapp_headers(actor_token),
+        follow_redirects=False,
+    )
+    assert revoke_response.status_code == 303
+    assert revoke_response.headers["location"].startswith(f"/admin/stores/{store['store_id']}?error=")
+
+    target_token = _login_via_miniapp(
+        client,
+        monkeypatch,
+        provider_user_id="24691",
+        username="revoke_hierarchy_target",
+    )
+    target_store_detail = client.get(
+        f"/admin/stores/{store['store_id']}",
+        headers=_webapp_headers(target_token),
+    )
+    assert target_store_detail.status_code == 200
+
+
+def test_store_root_can_revoke_lower_priority_membership(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store = _create_store(client, display_name="Revoke Success Store")
+    actor = _ensure_bot_user(
+        client,
+        provider_user_id="24700",
+        provider_chat_id="chat-24700",
+        username="revoke_success_actor",
+        display_name="Revoke Success Actor",
+    )
+    target = _ensure_bot_user(
+        client,
+        provider_user_id="24701",
+        provider_chat_id="chat-24701",
+        username="revoke_success_target",
+        display_name="Revoke Success Target",
+    )
+    _assign_membership(
+        client,
+        user_id=actor["user_id"],
+        store_id=store["store_id"],
+        role="root",
+    )
+    _assign_membership(
+        client,
+        user_id=target["user_id"],
+        store_id=store["store_id"],
+        role="store_admin",
+    )
+    actor_token = _login_via_miniapp(
+        client,
+        monkeypatch,
+        provider_user_id="24700",
+        username="revoke_success_actor",
+    )
+
+    revoke_response = client.post(
+        f"/admin/stores/{store['store_id']}/memberships/revoke",
+        data={"user_id": target["user_id"], "confirm": "yes"},
+        headers=_webapp_headers(actor_token),
+        follow_redirects=False,
+    )
+    assert revoke_response.status_code == 303
+    assert revoke_response.headers["location"].startswith(f"/admin/stores/{store['store_id']}?message=")
+
+    def _fake_verify_target(*, init_data: str, settings):
+        _ = init_data
+        _ = settings
+        return SimpleNamespace(
+            provider_user_id="24701",
+            username="revoke_success_target",
+            display_name="revoke_success_target",
+        )
+
+    monkeypatch.setattr(
+        "app.admin_ui.verify_webapp_init_data_via_tgbot",
+        _fake_verify_target,
+    )
+    denied_login = client.post(
+        "/admin/auth/telegram/miniapp",
+        json={"init_data": "test-init-data"},
+    )
+    assert denied_login.status_code == 403
+
+
+def test_store_admin_can_revoke_staff_invite_from_admin_ui(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store = _create_store(client, display_name="Invite Revoke Store")
+    actor = _ensure_bot_user(
+        client,
+        provider_user_id="24710",
+        provider_chat_id="chat-24710",
+        username="invite_revoke_actor",
+        display_name="Invite Revoke Actor",
+    )
+    target = _ensure_bot_user(
+        client,
+        provider_user_id="24711",
+        provider_chat_id="chat-24711",
+        username="invite_revoke_target",
+        display_name="Invite Revoke Target",
+    )
+    _assign_membership(
+        client,
+        user_id=actor["user_id"],
+        store_id=store["store_id"],
+        role="store_admin",
+    )
+
+    invite_create = client.post(
+        "/bot/v1/invites/create",
+        json={
+            "provider": "telegram",
+            "provider_user_id": "24710",
+            "role": "viewer",
+            "expires_in_sec": 900,
+            "max_uses": 1,
+        },
+        headers=_bot_headers(),
+    )
+    assert invite_create.status_code == 200
+    invite_payload = invite_create.json()
+
+    actor_token = _login_via_miniapp(
+        client,
+        monkeypatch,
+        provider_user_id="24710",
+        username="invite_revoke_actor",
+    )
+    revoke_response = client.post(
+        f"/admin/stores/{store['store_id']}/invites/{invite_payload['invite_id']}/revoke",
+        data={"confirm": "yes"},
+        headers=_webapp_headers(actor_token),
+        follow_redirects=False,
+    )
+    assert revoke_response.status_code == 303
+    assert revoke_response.headers["location"].startswith(f"/admin/stores/{store['store_id']}?message=")
+
+    redeem_response = client.post(
+        "/bot/v1/invites/redeem",
+        json={
+            "provider": "telegram",
+            "provider_user_id": "24711",
+            "invite_code": invite_payload["invite_code"],
+        },
+        headers=_bot_headers(),
+    )
+    assert target["user_id"]
+    assert redeem_response.status_code == 400
+    assert redeem_response.json() == {"detail": "invite_revoked"}
+
+
 def test_miniapp_logout_revokes_webapp_token(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

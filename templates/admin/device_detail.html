@@ -47,9 +47,40 @@
         <span class="kv-item__key">{{ t('label_enrolled_at') }}</span>
         <span class="kv-item__value">{{ detail.created_at or t('value_none') }}</span>
       </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_device_decommissioned') }}</span>
+        <span class="kv-item__value">
+          {% if detail.is_decommissioned %}
+            <span class="badge badge--inactive">{{ t('status_decommissioned') }}</span>
+            {% if detail.decommissioned_at %}
+            <span class="text-secondary">({{ detail.decommissioned_at }})</span>
+            {% endif %}
+          {% else %}
+            <span class="badge badge--active">{{ t('status_active_short') }}</span>
+          {% endif %}
+        </span>
+      </div>
     </div>
   </div>
 </div>
+
+{% if can_manage_device and not detail.is_decommissioned %}
+<div class="danger-zone mb-6">
+  <div class="danger-zone__title">
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
+    {{ t('button_decommission_device') }}
+  </div>
+  <form method="post" action="/admin/devices/{{ detail.device_id }}/decommission">
+    <label class="form-checkbox">
+      <input type="checkbox" name="confirm" value="yes" required>
+      <span>{{ t('confirm_device_decommission') }}</span>
+    </label>
+    <div class="form-actions" style="border-color: rgb(220 38 38 / 0.2);">
+      <button type="submit" class="btn btn--danger">{{ t('button_decommission_device') }}</button>
+    </div>
+  </form>
+</div>
+{% endif %}
 
 <div class="card">
   <div class="card__header">

@@ -197,6 +197,24 @@ def _migrate_admin_accounts_columns(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_enroll_tokens_columns(connection: sqlite3.Connection) -> None:
+    columns = _get_table_columns(connection, "enroll_tokens")
+    if not columns:
+        return
+
+    if "revoked_at" not in columns:
+        connection.execute("ALTER TABLE enroll_tokens ADD COLUMN revoked_at TEXT NULL")
+
+
+def _migrate_devices_lifecycle_columns(connection: sqlite3.Connection) -> None:
+    columns = _get_table_columns(connection, "devices")
+    if not columns:
+        return
+
+    if "decommissioned_at" not in columns:
+        connection.execute("ALTER TABLE devices ADD COLUMN decommissioned_at TEXT NULL")
+
+
 def init_db(database_path: str) -> None:
     connection = open_connection(database_path)
     try:
@@ -220,7 +238,8 @@ def init_db(database_path: str) -> None:
                 expires_at TEXT NOT NULL,
                 max_uses INTEGER NOT NULL,
                 uses INTEGER NOT NULL DEFAULT 0,
-                note TEXT NULL
+                note TEXT NULL,
+                revoked_at TEXT NULL
             );
 
             CREATE TABLE IF NOT EXISTS devices (
@@ -232,7 +251,8 @@ def init_db(database_path: str) -> None:
                 os TEXT NULL,
                 connector_version TEXT NULL,
                 last_seen_at TEXT NULL,
-                connected_at TEXT NULL
+                connected_at TEXT NULL,
+                decommissioned_at TEXT NULL
             );
 
             CREATE TABLE IF NOT EXISTS device_tokens (
@@ -513,6 +533,8 @@ def init_db(database_path: str) -> None:
         _migrate_stores_columns(connection)
         _migrate_users_columns(connection)
         _migrate_admin_accounts_columns(connection)
+        _migrate_enroll_tokens_columns(connection)
+        _migrate_devices_lifecycle_columns(connection)
         connection.commit()
     finally:
         connection.close()

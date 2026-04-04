@@ -35,6 +35,7 @@
           <tr>
             <th>{{ t('table_device_id') }}</th>
             <th>{{ t('table_store') }}</th>
+            <th>{{ t('table_status') }}</th>
             <th>{{ t('table_connected') }}</th>
             <th>{{ t('table_online') }}</th>
             <th>{{ t('table_last_seen') }}</th>
@@ -51,6 +52,13 @@
               <a href="/admin/stores/{{ device.store_id }}">{{ device.store_display_name }}</a>
               {% else %}
               <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if device.is_decommissioned %}
+                <span class="badge badge--inactive">{{ t('status_decommissioned') }}</span>
+              {% else %}
+                <span class="badge badge--active">{{ t('status_active_short') }}</span>
               {% endif %}
             </td>
             <td>
@@ -72,7 +80,7 @@
           {% endfor %}
           {% if not devices %}
           <tr>
-            <td colspan="5">
+            <td colspan="6">
               <div class="empty-state">
                 <svg class="empty-state__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
                 <div class="empty-state__title">{{ t('empty_no_devices_global') }}</div>

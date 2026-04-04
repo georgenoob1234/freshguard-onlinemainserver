@@ -32,6 +32,7 @@
         "invites.revoke",
         "users.manage",
         "roles.manage",
+        "roles.remove",
         "stores.manage",
         "devices.manage",
         "memberships.revoke.self"

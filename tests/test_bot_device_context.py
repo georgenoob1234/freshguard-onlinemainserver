@@ -207,6 +207,15 @@ def _set_device_last_seen(
         connection.commit()
 
 
+def _decommission_device(database_path: Path, *, device_id: str) -> None:
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE devices SET decommissioned_at = ? WHERE device_id = ?",
+            (datetime.now(timezone.utc).isoformat(), device_id),
+        )
+        connection.commit()
+
+
 def _seed_scan_result(
     database_path: Path,
     *,
@@ -743,3 +752,80 @@ def test_device_last_result_returns_not_found_when_device_has_no_results(client_
     )
     assert response.status_code == 404
     assert response.json() == {"detail": "result_not_found"}
+
+
+def test_list_store_devices_excludes_decommissioned_devices(client_and_db):
+    client, database_path = client_and_db
+    user = _ensure_user(
+        client,
+        provider_user_id="telegram-decommission-list-1",
+        provider_chat_id="telegram-chat-decommission-list-1",
+        username="decommission_list_user",
+    )
+    store = _create_store(client, display_name="Decommission List Store")
+    _seed_membership(
+        database_path,
+        store_id=store["store_id"],
+        user_id=user["user_id"],
+        role="viewer",
+    )
+    active_device = _register_device(
+        client,
+        store_id=store["store_id"],
+        label="Active Scale",
+        hostname="active-scale-1",
+    )
+    decommissioned_device = _register_device(
+        client,
+        store_id=store["store_id"],
+        label="Old Scale",
+        hostname="old-scale-1",
+    )
+    _decommission_device(database_path, device_id=decommissioned_device)
+
+    response = client.get(
+        f"/bot/v1/stores/{store['store_id']}/devices",
+        params=_bot_params("telegram-decommission-list-1"),
+        headers=_bot_headers(),
+    )
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["device_id"] == active_device
+
+
+def test_device_status_returns_not_found_for_decommissioned_device(client_and_db):
+    client, database_path = client_and_db
+    user = _ensure_user(
+        client,
+        provider_user_id="telegram-decommission-status-1",
+        provider_chat_id="telegram-chat-decommission-status-1",
+        username="decommission_status_user",
+    )
+    store = _create_store(client, display_name="Decommission Status Store")
+    _seed_membership(
+        database_path,
+        store_id=store["store_id"],
+        user_id=user["user_id"],
+        role="viewer",
+    )
+    _set_user_context(
+        database_path,
+        user_id=user["user_id"],
+        active_store_id=store["store_id"],
+    )
+    device_id = _register_device(
+        client,
+        store_id=store["store_id"],
+        label="Decommission Me",
+        hostname="decommission-me-1",
+    )
+    _decommission_device(database_path, device_id=device_id)
+
+    response = client.get(
+        f"/bot/v1/devices/{device_id}/status",
+        params=_bot_params("telegram-decommission-status-1"),
+        headers=_bot_headers(),
+    )
+    assert response.status_code == 404
+    assert response.json() == {"detail": "device_not_in_active_store"}

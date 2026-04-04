@@ -65,6 +65,12 @@ from app.notification_images import (
 from app.realtime import CommandTimeoutError, connection_manager, send_command
 from app.roles import is_known_role, is_permission_granted
 from app.security import hash_token
+from app.user_context import (
+    normalize_user_context,
+    normalize_user_context_after_membership_change,
+    resolve_effective_user_context,
+    upsert_user_context as _upsert_user_context,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -134,47 +140,6 @@ def _require_not_banned(user_row: sqlite3.Row) -> None:
         raise HTTPException(status_code=403, detail="user_banned")
 
 
-def _get_user_context_row(
-    connection: sqlite3.Connection,
-    *,
-    user_id: str,
-) -> sqlite3.Row | None:
-    return connection.execute(
-        """
-        SELECT active_store_id, active_device_id
-        FROM user_context
-        WHERE user_id = ?
-        """,
-        (user_id,),
-    ).fetchone()
-
-
-def _upsert_user_context(
-    connection: sqlite3.Connection,
-    *,
-    user_id: str,
-    active_store_id: str | None,
-    active_device_id: str | None,
-    updated_at: str,
-) -> None:
-    connection.execute(
-        """
-        INSERT INTO user_context (
-            user_id,
-            active_store_id,
-            active_device_id,
-            updated_at
-        )
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            active_store_id = excluded.active_store_id,
-            active_device_id = excluded.active_device_id,
-            updated_at = excluded.updated_at
-        """,
-        (user_id, active_store_id, active_device_id, updated_at),
-    )
-
-
 def _build_bot_device_summary(
     row: sqlite3.Row,
     *,
@@ -231,38 +196,22 @@ def _load_session_state(
             """
             SELECT COUNT(*) AS memberships_count
             FROM store_memberships
-            WHERE user_id = ? AND revoked_at IS NULL
+            JOIN stores ON stores.store_id = store_memberships.store_id
+            WHERE store_memberships.user_id = ?
+              AND store_memberships.revoked_at IS NULL
+              AND stores.is_active = 1
             """,
             (user_id,),
         ).fetchone()["memberships_count"]
     )
 
-    context_row = _get_user_context_row(connection, user_id=user_id)
-    active_store_id = None
-    active_device_id = None
-    active_store_display_name = None
-
-    if context_row is not None:
-        active_store_id = context_row["active_store_id"]
-        active_device_id = context_row["active_device_id"]
-
-    if active_store_id is not None:
-        store_row = connection.execute(
-            f"""
-            SELECT {_store_display_name_expr("stores")} AS display_name
-            FROM stores
-            WHERE store_id = ?
-            """,
-            (active_store_id,),
-        ).fetchone()
-        if store_row is not None:
-            active_store_display_name = store_row["display_name"]
+    effective_context = resolve_effective_user_context(connection, user_id=user_id)
 
     return {
         "memberships_count": memberships_count,
-        "active_store_id": active_store_id,
-        "active_store_display_name": active_store_display_name,
-        "active_device_id": active_device_id,
+        "active_store_id": effective_context.active_store_id,
+        "active_store_display_name": effective_context.active_store_display_name,
+        "active_device_id": effective_context.active_device_id,
     }
 
 
@@ -336,30 +285,13 @@ def _require_membership_row(
     return membership_row
 
 
-def _select_next_active_membership(
-    connection: sqlite3.Connection,
-    *,
-    user_id: str,
-) -> sqlite3.Row | None:
-    return connection.execute(
-        """
-        SELECT store_id
-        FROM store_memberships
-        WHERE user_id = ? AND revoked_at IS NULL
-        ORDER BY created_at ASC, membership_id ASC
-        LIMIT 1
-        """,
-        (user_id,),
-    ).fetchone()
-
-
 def _require_active_store_membership_row(
     connection: sqlite3.Connection,
     *,
     user_id: str,
 ) -> sqlite3.Row:
-    context_row = _get_user_context_row(connection, user_id=user_id)
-    active_store_id = context_row["active_store_id"] if context_row is not None else None
+    effective_context = normalize_user_context(connection, user_id=user_id)
+    active_store_id = effective_context.active_store_id
     if active_store_id is None:
         raise HTTPException(status_code=400, detail="no_active_store")
 
@@ -368,7 +300,7 @@ def _require_active_store_membership_row(
         user_id=user_id,
         store_id=active_store_id,
     )
-    if membership_row is None:
+    if membership_row is None or not _is_store_active(membership_row):
         raise HTTPException(status_code=400, detail="no_active_store")
     return membership_row
 
@@ -611,7 +543,7 @@ def _select_store_device_rows(
             {_device_display_name_expr("devices")} AS display_name,
             last_seen_at
         FROM devices
-        WHERE store_id = ?
+        WHERE store_id = ? AND decommissioned_at IS NULL
         ORDER BY created_at ASC, device_id ASC
         """,
         (store_id,),
@@ -632,7 +564,7 @@ def _select_store_device_row(
             {_device_display_name_expr("devices")} AS display_name,
             last_seen_at
         FROM devices
-        WHERE store_id = ? AND device_id = ?
+        WHERE store_id = ? AND device_id = ? AND decommissioned_at IS NULL
         """,
         (store_id, device_id),
     ).fetchone()
@@ -664,7 +596,7 @@ def _store_has_devices(
         """
         SELECT 1
         FROM devices
-        WHERE store_id = ?
+        WHERE store_id = ? AND decommissioned_at IS NULL
         LIMIT 1
         """,
         (store_id,),
@@ -688,7 +620,7 @@ def _select_latest_store_result_row(
             {_device_display_name_expr("devices")} AS device_display_name
         FROM scan_results
         JOIN devices ON devices.device_id = scan_results.device_id
-        WHERE devices.store_id = ?
+        WHERE devices.store_id = ? AND devices.decommissioned_at IS NULL
         ORDER BY
             COALESCE(scan_results.sent_at, scan_results.received_at) DESC,
             scan_results.received_at DESC,
@@ -716,7 +648,9 @@ def _select_latest_device_result_row(
             {_device_display_name_expr("devices")} AS device_display_name
         FROM scan_results
         JOIN devices ON devices.device_id = scan_results.device_id
-        WHERE devices.store_id = ? AND scan_results.device_id = ?
+        WHERE devices.store_id = ?
+          AND scan_results.device_id = ?
+          AND devices.decommissioned_at IS NULL
         ORDER BY
             COALESCE(scan_results.sent_at, scan_results.received_at) DESC,
             scan_results.received_at DESC,
@@ -868,22 +802,24 @@ def _select_command_row(
     return connection.execute(
         """
         SELECT
-            command_id,
-            request_id,
-            device_id,
-            store_id,
-            user_id,
-            request_type,
-            params_json,
-            status,
-            result_json,
-            error_code,
-            blob_id,
-            created_at,
-            sent_at,
-            completed_at
+            device_commands.command_id,
+            device_commands.request_id,
+            device_commands.device_id,
+            device_commands.store_id,
+            device_commands.user_id,
+            device_commands.request_type,
+            device_commands.params_json,
+            device_commands.status,
+            device_commands.result_json,
+            device_commands.error_code,
+            device_commands.blob_id,
+            device_commands.created_at,
+            device_commands.sent_at,
+            device_commands.completed_at
         FROM device_commands
-        WHERE command_id = ?
+        JOIN devices ON devices.device_id = device_commands.device_id
+        WHERE device_commands.command_id = ?
+          AND devices.decommissioned_at IS NULL
         """,
         (command_id,),
     ).fetchone()
@@ -1142,20 +1078,11 @@ def create_bot_invite(
         _require_not_banned(user_row)
         user_id = user_row["user_id"]
 
-        context_row = _get_user_context_row(connection, user_id=user_id)
-        active_store_id = context_row["active_store_id"] if context_row is not None else None
-        if active_store_id is None:
-            raise HTTPException(status_code=400, detail="no_active_store")
-
-        membership_row = _select_active_membership_row(
+        membership_row = _require_active_store_membership_row(
             connection,
             user_id=user_id,
-            store_id=active_store_id,
         )
-        if membership_row is None:
-            raise HTTPException(status_code=400, detail="no_active_store")
-        if int(membership_row["store_is_active"]) != 1:
-            raise HTTPException(status_code=400, detail="store_inactive")
+        active_store_id = membership_row["store_id"]
 
         _require_role_permissions(membership_row["role"], "invites.create")
 
@@ -1361,16 +1288,22 @@ def list_bot_stores(
     if not memberships:
         return BotStoresResponse(items=[])
 
-    permitted_memberships = [
+    permissioned_memberships = [
         membership
         for membership in memberships
         if _role_has_all_permissions(membership["role"], "bot.user_context.read", "stores.read")
     ]
-    if not permitted_memberships:
+    if not permissioned_memberships:
         raise HTTPException(status_code=403, detail="permission_denied")
 
-    context_row = _get_user_context_row(connection, user_id=user_row["user_id"])
-    active_store_id = context_row["active_store_id"] if context_row is not None else None
+    permitted_memberships = [
+        membership for membership in permissioned_memberships if _is_store_active(membership)
+    ]
+    if not permitted_memberships:
+        return BotStoresResponse(items=[])
+
+    effective_context = resolve_effective_user_context(connection, user_id=user_row["user_id"])
+    active_store_id = effective_context.active_store_id
 
     return BotStoresResponse(
         items=[
@@ -1408,6 +1341,8 @@ def list_bot_store_devices(
         user_id=user_row["user_id"],
         store_id=store_id,
     )
+    if not _is_store_active(membership_row):
+        raise HTTPException(status_code=404, detail="store_not_available")
     _require_role_permissions(membership_row["role"], "stores.read", "devices.list")
 
     settings = get_settings()
@@ -1452,6 +1387,8 @@ def set_active_store(
         )
         if membership_row is None:
             raise HTTPException(status_code=404, detail="membership_not_found")
+        if not _is_store_active(membership_row):
+            raise HTTPException(status_code=404, detail="store_not_available")
 
         _require_role_permissions(membership_row["role"], "bot.store.select")
         _upsert_user_context(
@@ -2261,23 +2198,14 @@ def revoke_self_membership(
             (revoked_at, membership_row["membership_id"]),
         )
 
-        context_row = _get_user_context_row(connection, user_id=user_id)
-        active_store_id = context_row["active_store_id"] if context_row is not None else None
-        active_device_id = context_row["active_device_id"] if context_row is not None else None
-
-        if active_store_id == payload.store_id:
-            next_membership_row = _select_next_active_membership(connection, user_id=user_id)
-            active_store_id = (
-                next_membership_row["store_id"] if next_membership_row is not None else None
-            )
-            active_device_id = None
-            _upsert_user_context(
-                connection,
-                user_id=user_id,
-                active_store_id=active_store_id,
-                active_device_id=active_device_id,
-                updated_at=revoked_at,
-            )
+        effective_context = normalize_user_context_after_membership_change(
+            connection,
+            user_id=user_id,
+            revoked_store_id=payload.store_id,
+            updated_at=revoked_at,
+        )
+        active_store_id = effective_context.active_store_id
+        active_device_id = effective_context.active_device_id
 
         connection.execute("COMMIT")
     except HTTPException:

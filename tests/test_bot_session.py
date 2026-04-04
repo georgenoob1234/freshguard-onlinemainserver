@@ -350,3 +350,40 @@ def test_bot_session_ensure_returns_linked_state_and_active_store_details(client
     assert body["active_store_id"] == "store-linked-1"
     assert body["active_store_display_name"] == "Linked Store"
     assert body["active_device_id"] is None
+
+
+def test_bot_session_ensure_treats_inactive_store_context_as_unavailable(client_and_db):
+    client, database_path = client_and_db
+    payload = _ensure_payload(provider_user_id="telegram-user-inactive-store-1")
+
+    first = client.post("/bot/v1/session/ensure", json=payload, headers=_bot_headers())
+    assert first.status_code == 200
+    user_id = first.json()["user_id"]
+
+    _seed_store(
+        database_path,
+        store_id="store-inactive-1",
+        display_name="Inactive Store",
+        is_active=False,
+    )
+    _seed_membership(
+        database_path,
+        store_id="store-inactive-1",
+        user_id=user_id,
+        role="viewer",
+    )
+    _set_user_context(
+        database_path,
+        user_id=user_id,
+        active_store_id="store-inactive-1",
+    )
+
+    second = client.post("/bot/v1/session/ensure", json=payload, headers=_bot_headers())
+    assert second.status_code == 200
+    body = second.json()
+    assert body["user_id"] == user_id
+    assert body["is_linked"] is False
+    assert body["memberships_count"] == 0
+    assert body["active_store_id"] is None
+    assert body["active_store_display_name"] is None
+    assert body["active_device_id"] is None
