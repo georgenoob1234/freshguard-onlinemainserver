@@ -4,7 +4,6 @@ from datetime import datetime, timedelta, timezone
 import json
 import logging
 from pathlib import Path
-import secrets
 import sqlite3
 import uuid
 
@@ -63,8 +62,12 @@ from app.notification_images import (
     load_result_image_context,
 )
 from app.realtime import CommandTimeoutError, connection_manager, send_command
-from app.roles import is_known_role, is_permission_granted
+from app.roles import is_permission_granted
 from app.security import hash_token
+from app.staff_invite_policy import (
+    generate_unique_staff_invite_code,
+    normalize_staff_invite_role,
+)
 from app.user_context import (
     normalize_user_context,
     normalize_user_context_after_membership_change,
@@ -75,9 +78,6 @@ from app.user_context import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/bot/v1", tags=["bot"])
-ALLOWED_BOT_INVITE_ROLES = frozenset({"operator", "viewer"})
-INVITE_CODE_DIGITS = 6
-MAX_INVITE_CODE_GENERATION_ATTEMPTS = 32
 
 
 def _store_display_name_expr(table_alias: str) -> str:
@@ -731,12 +731,7 @@ def _require_role_permissions(role_name: str, *permissions: str) -> None:
 
 
 def _normalize_invite_role(role_name: str) -> str:
-    normalized = role_name.strip().lower()
-    if not is_known_role(normalized):
-        raise HTTPException(status_code=400, detail="unknown_role")
-    if normalized not in ALLOWED_BOT_INVITE_ROLES:
-        raise HTTPException(status_code=400, detail="invalid_invite_role")
-    return normalized
+    return normalize_staff_invite_role(role_name)
 
 
 def _normalize_request_type(request_type: str) -> str:
@@ -771,27 +766,11 @@ def _generate_unique_invite_code(
     secret_salt: str,
     now_utc: datetime,
 ) -> tuple[str, str]:
-    for _ in range(MAX_INVITE_CODE_GENERATION_ATTEMPTS):
-        invite_code = f"{secrets.randbelow(10**INVITE_CODE_DIGITS):0{INVITE_CODE_DIGITS}d}"
-        code_hash = hash_token(invite_code, secret_salt)
-        prior_rows = connection.execute(
-            """
-            SELECT expires_at, max_uses, used_count, revoked_at
-            FROM staff_invites
-            WHERE code_hash = ?
-            """,
-            (code_hash,),
-        ).fetchall()
-        has_active_collision = any(
-            row["revoked_at"] is None
-            and int(row["used_count"]) < int(row["max_uses"])
-            and _parse_iso_datetime(row["expires_at"]) > now_utc
-            for row in prior_rows
-        )
-        if not has_active_collision:
-            return invite_code, code_hash
-
-    raise HTTPException(status_code=500, detail="invite_code_generation_failed")
+    return generate_unique_staff_invite_code(
+        connection,
+        secret_salt=secret_salt,
+        now_utc=now_utc,
+    )
 
 
 def _select_command_row(
@@ -1183,9 +1162,15 @@ def redeem_bot_invite(
         now_utc = datetime.now(timezone.utc)
         if invite_row["revoked_at"] is not None:
             raise HTTPException(status_code=400, detail="invite_revoked")
-        if _parse_iso_datetime(invite_row["expires_at"]) <= now_utc:
+        if (
+            invite_row["expires_at"] is not None
+            and _parse_iso_datetime(invite_row["expires_at"]) <= now_utc
+        ):
             raise HTTPException(status_code=400, detail="invite_expired")
-        if int(invite_row["used_count"]) >= int(invite_row["max_uses"]):
+        if (
+            invite_row["max_uses"] is not None
+            and int(invite_row["used_count"]) >= int(invite_row["max_uses"])
+        ):
             raise HTTPException(status_code=400, detail="invite_exhausted")
         if int(invite_row["store_is_active"]) != 1:
             raise HTTPException(status_code=400, detail="store_inactive")
@@ -1228,7 +1213,7 @@ def redeem_bot_invite(
                 """
                 UPDATE staff_invites
                 SET used_count = used_count + 1
-                WHERE invite_id = ? AND used_count < max_uses
+                WHERE invite_id = ? AND (max_uses IS NULL OR used_count < max_uses)
                 """,
                 (invite_row["invite_id"],),
             )

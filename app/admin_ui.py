@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 from urllib.parse import urlencode
@@ -37,6 +38,7 @@ from app.models import (
     AdminUpdateStoreRequest,
     AdminUpdateUserBanRequest,
 )
+from app.staff_invite_policy import ALLOWED_STAFF_INVITE_ROLES
 from app.tgbot_internal_client import verify_webapp_init_data_via_tgbot
 
 
@@ -91,6 +93,26 @@ def _has_all_permissions_in_any_store(actor: AdminActor, *permissions: str) -> b
     return scope is None or bool(scope)
 
 
+def _parse_optional_positive_int(raw_value: str) -> int | None:
+    trimmed = raw_value.strip()
+    if not trimmed:
+        return None
+    value = int(trimmed)
+    if value < 1:
+        raise ValueError("value must be >= 1")
+    return value
+
+
+def _parse_optional_datetime_local_to_utc_iso(raw_value: str) -> str | None:
+    trimmed = raw_value.strip()
+    if not trimmed:
+        return None
+    parsed = datetime.fromisoformat(trimmed)
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 def _nav_permissions(actor: AdminActor) -> dict[str, bool]:
     return {
         "users": _has_any_store_permission(actor, "users.manage"),
@@ -116,6 +138,86 @@ def _telegram_login_error_message(detail: str, *, t) -> str:
         "stale_telegram_init_data": "error_telegram_init_expired",
     }
     return t(mapping.get(detail, "error_telegram_login_failed"))
+
+
+def _build_store_detail_context(
+    *,
+    request: Request,
+    actor: AdminActor,
+    connection: sqlite3.Connection,
+    store_id: str,
+    message: str = "",
+    error: str = "",
+    created_invite: dict[str, object] | None = None,
+    invite_form: dict[str, str] | None = None,
+) -> dict[str, object]:
+    if not actor.has_store_scope(store_id):
+        raise HTTPException(status_code=404, detail="Store not found")
+    if not (
+        actor.has_permission("stores.read", store_id=store_id)
+        or actor.has_permission("stores.manage", store_id=store_id)
+    ):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    settings = get_settings()
+    detail = admin_ops.get_store_detail(
+        connection,
+        store_id=store_id,
+        online_threshold_seconds=settings.online_threshold_seconds,
+        scoped_store_ids=None if actor.is_global else actor.scoped_store_ids,
+    )
+    can_edit_store = actor.has_permission("stores.manage", store_id=store_id)
+    can_manage_memberships = actor.has_permission("roles.manage", store_id=store_id)
+    can_remove_memberships = actor.has_permission("roles.remove", store_id=store_id)
+    can_create_invites = actor.has_permission("invites.create", store_id=store_id)
+    can_revoke_invites = actor.has_permission("invites.revoke", store_id=store_id)
+    can_manage_invites = can_create_invites or can_revoke_invites
+    can_view_memberships = can_manage_memberships or can_remove_memberships
+    can_view_devices = actor.has_permission("devices.list", store_id=store_id) and actor.has_permission(
+        "devices.status.read",
+        store_id=store_id,
+    )
+    if not can_view_memberships:
+        detail["members"] = []
+    if not can_view_devices:
+        detail["devices"] = []
+    invites = (
+        admin_ops.list_staff_invites_for_store(
+            connection,
+            store_id=store_id,
+            scoped_store_ids=None if actor.is_global else actor.scoped_store_ids,
+        )
+        if can_manage_invites
+        else []
+    )
+
+    locale = resolve_locale(request)
+    t = make_translate_for(locale)
+    return {
+        "page_title": t("page_title_store_detail", store_id=store_id),
+        "admin_username": actor.display_name,
+        "detail": detail,
+        "can_edit_store": can_edit_store,
+        "can_manage_memberships": can_manage_memberships,
+        "can_remove_memberships": can_remove_memberships,
+        "can_manage_invites": can_manage_invites,
+        "can_create_invites": can_create_invites,
+        "can_revoke_invites": can_revoke_invites,
+        "can_view_devices": can_view_devices,
+        "invites": invites,
+        "created_invite": created_invite,
+        "invite_form": invite_form or {
+            "role": "operator",
+            "expires_at": "",
+            "max_uses": "1",
+            "note": "",
+        },
+        "invite_role_options": tuple(sorted(ALLOWED_STAFF_INVITE_ROLES)),
+        "is_bootstrap_actor": actor.is_bootstrap,
+        "message": message,
+        "error": error,
+        "nav_permissions": _nav_permissions(actor),
+    }
 
 
 def _render_webapp_bootstrap(request: Request) -> HTMLResponse:
@@ -573,61 +675,18 @@ def store_detail(
     actor: AdminActor = Depends(require_admin_ui_access),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> HTMLResponse:
-    if not actor.has_store_scope(store_id):
-        raise HTTPException(status_code=404, detail="Store not found")
-    if not (
-        actor.has_permission("stores.read", store_id=store_id)
-        or actor.has_permission("stores.manage", store_id=store_id)
-    ):
-        raise HTTPException(status_code=403, detail="forbidden")
-    settings = get_settings()
-    detail = admin_ops.get_store_detail(
-        connection,
+    context = _build_store_detail_context(
+        request=request,
+        actor=actor,
+        connection=connection,
         store_id=store_id,
-        online_threshold_seconds=settings.online_threshold_seconds,
-        scoped_store_ids=None if actor.is_global else actor.scoped_store_ids,
+        message=request.query_params.get("message", ""),
+        error=request.query_params.get("error", ""),
     )
-    can_edit_store = actor.has_permission("stores.manage", store_id=store_id)
-    can_manage_memberships = actor.has_permission("roles.manage", store_id=store_id)
-    can_remove_memberships = actor.has_permission("roles.remove", store_id=store_id)
-    can_manage_invites = actor.has_permission("invites.revoke", store_id=store_id)
-    can_view_memberships = can_manage_memberships or can_remove_memberships
-    can_view_devices = actor.has_permission("devices.list", store_id=store_id) and actor.has_permission(
-        "devices.status.read",
-        store_id=store_id,
-    )
-    if not can_view_memberships:
-        detail["members"] = []
-    if not can_view_devices:
-        detail["devices"] = []
-    invites = (
-        admin_ops.list_staff_invites_for_store(
-            connection,
-            store_id=store_id,
-            scoped_store_ids=None if actor.is_global else actor.scoped_store_ids,
-        )
-        if can_manage_invites
-        else []
-    )
-    locale = resolve_locale(request)
-    t = make_translate_for(locale)
     return _render(
         request,
         "admin/store_detail.html",
-        {
-            "page_title": t("page_title_store_detail", store_id=store_id),
-            "admin_username": actor.display_name,
-            "detail": detail,
-            "can_edit_store": can_edit_store,
-            "can_manage_memberships": can_manage_memberships,
-            "can_remove_memberships": can_remove_memberships,
-            "can_manage_invites": can_manage_invites,
-            "can_view_devices": can_view_devices,
-            "invites": invites,
-            "message": request.query_params.get("message", ""),
-            "error": request.query_params.get("error", ""),
-            "nav_permissions": _nav_permissions(actor),
-        },
+        context,
     )
 
 
@@ -714,6 +773,123 @@ def revoke_store_membership(
     except Exception:
         return _redirect(f"/admin/stores/{store_id}", {"error": t("error_confirm_membership_revoke")})
     return _redirect(f"/admin/stores/{store_id}", {"message": t("flash_membership_revoked")})
+
+
+@router.post("/stores/{store_id}/invites/create", response_class=HTMLResponse)
+def create_store_invite(
+    store_id: str,
+    request: Request,
+    role: str = Form(default="operator"),
+    note: str = Form(default=""),
+    expires_at: str = Form(default=""),
+    max_uses: str = Form(default=""),
+    confirm: str = Form(default=""),
+    actor: AdminActor = Depends(require_admin_ui_access),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> HTMLResponse:
+    locale = resolve_locale(request)
+    t = make_translate_for(locale)
+    if not actor.has_store_scope(store_id):
+        raise HTTPException(status_code=404, detail="Store not found")
+    if not actor.has_permission("invites.create", store_id=store_id):
+        return _redirect(f"/admin/stores/{store_id}", {"error": t("error_forbidden_action")})
+
+    invite_form = {
+        "role": role.strip() or "operator",
+        "expires_at": expires_at.strip(),
+        "max_uses": max_uses.strip(),
+        "note": note,
+    }
+
+    if confirm != "yes":
+        context = _build_store_detail_context(
+            request=request,
+            actor=actor,
+            connection=connection,
+            store_id=store_id,
+            error=t("error_confirm_invite_minting"),
+            invite_form=invite_form,
+        )
+        return _render(request, "admin/store_detail.html", context, status_code=400)
+
+    try:
+        parsed_expires_at = _parse_optional_datetime_local_to_utc_iso(expires_at)
+    except ValueError:
+        context = _build_store_detail_context(
+            request=request,
+            actor=actor,
+            connection=connection,
+            store_id=store_id,
+            error=t("error_invalid_invite_expires_at"),
+            invite_form=invite_form,
+        )
+        return _render(request, "admin/store_detail.html", context, status_code=400)
+
+    try:
+        parsed_max_uses = _parse_optional_positive_int(max_uses)
+    except ValueError:
+        context = _build_store_detail_context(
+            request=request,
+            actor=actor,
+            connection=connection,
+            store_id=store_id,
+            error=t("error_invalid_invite_max_uses"),
+            invite_form=invite_form,
+        )
+        return _render(request, "admin/store_detail.html", context, status_code=400)
+
+    if not actor.is_bootstrap and parsed_expires_at is None and parsed_max_uses is None:
+        context = _build_store_detail_context(
+            request=request,
+            actor=actor,
+            connection=connection,
+            store_id=store_id,
+            error=t("error_invite_requires_limit"),
+            invite_form=invite_form,
+        )
+        return _render(request, "admin/store_detail.html", context, status_code=400)
+
+    try:
+        created_invite = admin_ops.create_staff_invite_for_admin_ui(
+            connection,
+            store_id=store_id,
+            role=role,
+            note=note,
+            expires_at=parsed_expires_at,
+            max_uses=parsed_max_uses,
+            created_by_user_id=actor.user_id,
+            secret_salt=get_settings().secret_salt,
+            scoped_store_ids=None if actor.is_global else actor.scoped_store_ids,
+        )
+    except HTTPException as error:
+        detail = str(error.detail)
+        error_key = {
+            "unknown_store": "error_unknown_store",
+            "store_inactive": "error_store_inactive_for_invite_minting",
+            "invalid_invite_role": "error_invalid_invite_role",
+            "invalid_note": "error_invalid_invite_note",
+            "invalid_max_uses": "error_invalid_invite_max_uses",
+            "invalid_expires_at": "error_invalid_invite_expires_at",
+        }.get(detail, "error_forbidden_action")
+        context = _build_store_detail_context(
+            request=request,
+            actor=actor,
+            connection=connection,
+            store_id=store_id,
+            error=t(error_key),
+            invite_form=invite_form,
+        )
+        return _render(request, "admin/store_detail.html", context, status_code=error.status_code)
+
+    context = _build_store_detail_context(
+        request=request,
+        actor=actor,
+        connection=connection,
+        store_id=store_id,
+        message=t("flash_invite_minted"),
+        created_invite=created_invite,
+    )
+    return _render(request, "admin/store_detail.html", context)
 
 
 @router.post("/stores/{store_id}/invites/{invite_id}/revoke")

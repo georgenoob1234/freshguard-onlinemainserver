@@ -215,6 +215,84 @@ def _migrate_devices_lifecycle_columns(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE devices ADD COLUMN decommissioned_at TEXT NULL")
 
 
+def _migrate_staff_invites_columns(connection: sqlite3.Connection) -> None:
+    rows = connection.execute("PRAGMA table_info(staff_invites)").fetchall()
+    if not rows:
+        return
+
+    columns = {row["name"]: row for row in rows}
+    required_columns = {"expires_at", "max_uses", "created_by_user_id"}
+    if not required_columns.issubset(columns.keys()):
+        return
+
+    needs_rebuild = (
+        int(columns["expires_at"]["notnull"]) == 1
+        or int(columns["max_uses"]["notnull"]) == 1
+        or int(columns["created_by_user_id"]["notnull"]) == 1
+    )
+    if not needs_rebuild:
+        return
+
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS staff_invites_v2 (
+            invite_id TEXT PRIMARY KEY,
+            store_id TEXT NOT NULL,
+            code_hash TEXT NOT NULL,
+            role TEXT NOT NULL,
+            created_by_user_id TEXT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NULL,
+            max_uses INTEGER NULL,
+            used_count INTEGER NOT NULL DEFAULT 0,
+            revoked_at TEXT NULL,
+            note TEXT NULL,
+            FOREIGN KEY(store_id) REFERENCES stores(store_id),
+            FOREIGN KEY(created_by_user_id) REFERENCES users(user_id) ON DELETE SET NULL
+        );
+
+        INSERT INTO staff_invites_v2 (
+            invite_id,
+            store_id,
+            code_hash,
+            role,
+            created_by_user_id,
+            created_at,
+            expires_at,
+            max_uses,
+            used_count,
+            revoked_at,
+            note
+        )
+        SELECT
+            invite_id,
+            store_id,
+            code_hash,
+            role,
+            created_by_user_id,
+            created_at,
+            expires_at,
+            max_uses,
+            used_count,
+            revoked_at,
+            note
+        FROM staff_invites;
+
+        DROP TABLE staff_invites;
+        ALTER TABLE staff_invites_v2 RENAME TO staff_invites;
+
+        CREATE INDEX IF NOT EXISTS idx_staff_invites_code_hash
+        ON staff_invites(code_hash);
+
+        CREATE INDEX IF NOT EXISTS idx_staff_invites_store_id
+        ON staff_invites(store_id);
+
+        CREATE INDEX IF NOT EXISTS idx_staff_invites_created_by
+        ON staff_invites(created_by_user_id);
+        """
+    )
+
+
 def init_db(database_path: str) -> None:
     connection = open_connection(database_path)
     try:
@@ -464,15 +542,15 @@ def init_db(database_path: str) -> None:
                 store_id TEXT NOT NULL,
                 code_hash TEXT NOT NULL,
                 role TEXT NOT NULL,
-                created_by_user_id TEXT NOT NULL,
+                created_by_user_id TEXT NULL,
                 created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                max_uses INTEGER NOT NULL,
+                expires_at TEXT NULL,
+                max_uses INTEGER NULL,
                 used_count INTEGER NOT NULL DEFAULT 0,
                 revoked_at TEXT NULL,
                 note TEXT NULL,
                 FOREIGN KEY(store_id) REFERENCES stores(store_id),
-                FOREIGN KEY(created_by_user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                FOREIGN KEY(created_by_user_id) REFERENCES users(user_id) ON DELETE SET NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_staff_invites_code_hash
@@ -535,6 +613,7 @@ def init_db(database_path: str) -> None:
         _migrate_admin_accounts_columns(connection)
         _migrate_enroll_tokens_columns(connection)
         _migrate_devices_lifecycle_columns(connection)
+        _migrate_staff_invites_columns(connection)
         connection.commit()
     finally:
         connection.close()

@@ -493,6 +493,166 @@ def test_store_admin_can_revoke_staff_invite_from_admin_ui(
     assert redeem_response.json() == {"detail": "invite_revoked"}
 
 
+def test_store_admin_invite_minting_requires_limit_for_oms_user(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store = _create_store(client, display_name="Invite Limit Store")
+    actor = _ensure_bot_user(
+        client,
+        provider_user_id="25710",
+        provider_chat_id="chat-25710",
+        username="invite_limit_actor",
+        display_name="Invite Limit Actor",
+    )
+    _assign_membership(
+        client,
+        user_id=actor["user_id"],
+        store_id=store["store_id"],
+        role="store_admin",
+    )
+    actor_token = _login_via_miniapp(
+        client,
+        monkeypatch,
+        provider_user_id="25710",
+        username="invite_limit_actor",
+    )
+    headers = _webapp_headers(actor_token)
+
+    invalid_response = client.post(
+        f"/admin/stores/{store['store_id']}/invites/create",
+        data={
+            "role": "viewer",
+            "expires_at": "",
+            "max_uses": "",
+            "note": "",
+            "confirm": "yes",
+        },
+        headers=headers,
+    )
+    assert invalid_response.status_code == 400
+    assert 'id="invite-code-display"' not in invalid_response.text
+
+    valid_response = client.post(
+        f"/admin/stores/{store['store_id']}/invites/create",
+        data={
+            "role": "viewer",
+            "expires_at": "",
+            "max_uses": "2",
+            "note": "from admin ui",
+            "confirm": "yes",
+        },
+        headers=headers,
+    )
+    assert valid_response.status_code == 200
+    assert 'id="invite-code-display"' in valid_response.text
+
+
+def test_store_root_invite_minting_is_not_global_unlimited(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store = _create_store(client, display_name="Store Root Invite Limit")
+    actor = _ensure_bot_user(
+        client,
+        provider_user_id="25720",
+        provider_chat_id="chat-25720",
+        username="invite_root_actor",
+        display_name="Invite Root Actor",
+    )
+    _assign_membership(
+        client,
+        user_id=actor["user_id"],
+        store_id=store["store_id"],
+        role="root",
+    )
+    actor_token = _login_via_miniapp(
+        client,
+        monkeypatch,
+        provider_user_id="25720",
+        username="invite_root_actor",
+    )
+    response = client.post(
+        f"/admin/stores/{store['store_id']}/invites/create",
+        data={
+            "role": "viewer",
+            "expires_at": "",
+            "max_uses": "",
+            "note": "",
+            "confirm": "yes",
+        },
+        headers=_webapp_headers(actor_token),
+    )
+    assert response.status_code == 400
+    assert 'id="invite-code-display"' not in response.text
+
+
+def test_bootstrap_admin_can_mint_fully_unlimited_staff_invite(client: TestClient):
+    store = _create_store(client, display_name="Bootstrap Unlimited Invite Store")
+    _login_bootstrap(client)
+
+    response = client.post(
+        f"/admin/stores/{store['store_id']}/invites/create",
+        data={
+            "role": "viewer",
+            "expires_at": "",
+            "max_uses": "",
+            "note": "bootstrap unlimited",
+            "confirm": "yes",
+        },
+    )
+    assert response.status_code == 200
+    assert 'id="invite-code-display"' in response.text
+    assert "Без ограничений" in response.text or "Unlimited" in response.text
+    assert "Никогда" in response.text or "Never" in response.text
+
+
+def test_invite_minting_rejects_inactive_store(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store = _create_store(client, display_name="Inactive Invite Store")
+    actor = _ensure_bot_user(
+        client,
+        provider_user_id="25730",
+        provider_chat_id="chat-25730",
+        username="invite_inactive_actor",
+        display_name="Invite Inactive Actor",
+    )
+    _assign_membership(
+        client,
+        user_id=actor["user_id"],
+        store_id=store["store_id"],
+        role="store_admin",
+    )
+    deactivate = client.patch(
+        f"/admin/v1/stores/{store['store_id']}",
+        json={"is_active": False},
+        headers=_admin_headers(),
+    )
+    assert deactivate.status_code == 200
+
+    actor_token = _login_via_miniapp(
+        client,
+        monkeypatch,
+        provider_user_id="25730",
+        username="invite_inactive_actor",
+    )
+    response = client.post(
+        f"/admin/stores/{store['store_id']}/invites/create",
+        data={
+            "role": "viewer",
+            "expires_at": "",
+            "max_uses": "1",
+            "note": "inactive store should fail",
+            "confirm": "yes",
+        },
+        headers=_webapp_headers(actor_token),
+    )
+    assert response.status_code == 400
+    assert 'id="invite-code-display"' not in response.text
+
+
 def test_miniapp_logout_revokes_webapp_token(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

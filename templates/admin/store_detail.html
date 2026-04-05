@@ -174,6 +174,124 @@
 {% endif %}
 
 {% if can_manage_invites %}
+{% if can_create_invites %}
+<div class="card mb-6">
+  <div class="card__header">
+    <h2 class="card__title">{{ t('mint_invite_title') }}</h2>
+  </div>
+  <div class="card__body">
+    <form method="post" action="/admin/stores/{{ detail.store.store_id }}/invites/create">
+      <div class="form-group">
+        <label class="form-label" for="invite_role">{{ t('label_role') }}</label>
+        <select class="form-select" id="invite_role" name="role" required>
+          {% for role_option in invite_role_options %}
+          <option value="{{ role_option }}" {% if invite_form.role == role_option %}selected{% endif %}>{{ role_option }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="invite_expires_at">
+          {{ t('label_invite_expires_at_optional') }}
+          <span class="form-label__hint">— {{ t('placeholder_optional_empty') }}</span>
+        </label>
+        <input class="form-input" type="datetime-local" id="invite_expires_at" name="expires_at" value="{{ invite_form.expires_at }}">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="invite_max_uses">
+          {{ t('label_invite_max_uses_optional') }}
+          <span class="form-label__hint">— {{ t('placeholder_optional_empty') }}</span>
+        </label>
+        <input class="form-input" type="number" id="invite_max_uses" name="max_uses" min="1" value="{{ invite_form.max_uses }}">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="invite_note">
+          {{ t('label_note') }}
+          <span class="form-label__hint">— {{ t('placeholder_note_optional') }}</span>
+        </label>
+        <input class="form-input" type="text" id="invite_note" name="note" value="{{ invite_form.note }}">
+      </div>
+
+      {% if is_bootstrap_actor %}
+      <p class="text-secondary">{{ t('hint_bootstrap_unlimited_invite') }}</p>
+      {% else %}
+      <p class="text-secondary">{{ t('hint_invite_limit_required') }}</p>
+      {% endif %}
+
+      <label class="form-checkbox">
+        <input type="checkbox" name="confirm" value="yes" required>
+        <span>{{ t('confirm_invite_minting') }}</span>
+      </label>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary">{{ t('button_mint_invite') }}</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% if created_invite %}
+<div class="card mb-6" style="border-color: var(--color-primary);">
+  <div class="card__header" style="background: var(--color-primary-light); border-color: rgb(37 99 235 / 0.2);">
+    <h2 class="card__title" style="color: var(--color-primary);">
+      {{ t('created_invite_title') }}
+    </h2>
+  </div>
+  <div class="card__body">
+    <p class="flash flash--warning" style="margin-bottom: 1rem;">
+      {{ t('copy_now_invite_message') }}
+    </p>
+    <div class="token-display" id="invite-code-display">
+      {{ created_invite.invite_code }}
+      <div class="token-display__actions">
+        <button type="button" class="btn btn--sm btn--secondary" id="copy-invite-btn" onclick="copyInviteCode()">
+          <span id="copy-invite-text">{{ t('button_copy_token') }}</span>
+        </button>
+      </div>
+    </div>
+    <div class="kv-list" style="margin-top: 1.5rem;">
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('table_invite_id') }}</span>
+        <span class="kv-item__value"><code>{{ created_invite.invite_id }}</code></span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_role') }}</span>
+        <span class="kv-item__value">{{ created_invite.role }}</span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('table_expires_at') }}</span>
+        <span class="kv-item__value">{{ created_invite.expires_at or t('value_never') }}</span>
+      </div>
+      <div class="kv-item">
+        <span class="kv-item__key">{{ t('label_max_uses_short') }}</span>
+        <span class="kv-item__value">{{ created_invite.max_uses if created_invite.max_uses is not none else t('value_unlimited') }}</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function copyInviteCode() {
+  const inviteCode = document.getElementById('invite-code-display').childNodes[0].textContent.trim();
+  const btn = document.getElementById('copy-invite-btn');
+  const text = document.getElementById('copy-invite-text');
+  navigator.clipboard.writeText(inviteCode).then(function() {
+    text.textContent = '{{ t('copy_success') }}';
+    btn.classList.remove('btn--secondary');
+    btn.classList.add('btn--primary');
+    setTimeout(function() {
+      text.textContent = '{{ t('button_copy_token') }}';
+      btn.classList.remove('btn--primary');
+      btn.classList.add('btn--secondary');
+    }, 2000);
+  });
+}
+</script>
+{% endif %}
+
 <div class="card mb-6">
   <div class="card__header">
     <h2 class="card__title">{{ t('section_staff_invites') }}</h2>
@@ -188,7 +306,9 @@
             <th>{{ t('table_status_short') }}</th>
             <th>{{ t('table_uses') }}</th>
             <th>{{ t('table_expires_at') }}</th>
+            {% if can_revoke_invites %}
             <th>{{ t('table_actions') }}</th>
+            {% endif %}
           </tr>
         </thead>
         <tbody>
@@ -207,10 +327,11 @@
               <span class="badge badge--inactive">{{ t('status_exhausted') }}</span>
               {% endif %}
             </td>
-            <td>{{ invite.used_count }} / {{ invite.max_uses }}</td>
-            <td>{{ invite.expires_at }}</td>
+            <td>{{ invite.used_count }} / {{ invite.max_uses if invite.max_uses is not none else t('value_unlimited') }}</td>
+            <td>{{ invite.expires_at or t('value_never') }}</td>
+            {% if can_revoke_invites %}
             <td>
-              {% if invite.status == 'active' %}
+              {% if invite.status == 'active' and can_revoke_invites %}
               <form method="post" action="/admin/stores/{{ detail.store.store_id }}/invites/{{ invite.invite_id }}/revoke">
                 <input type="hidden" name="confirm" value="yes">
                 <button type="submit" class="btn btn--sm btn--danger">{{ t('button_revoke') }}</button>
@@ -219,11 +340,12 @@
               <span class="text-secondary">-</span>
               {% endif %}
             </td>
+            {% endif %}
           </tr>
           {% endfor %}
           {% if not invites %}
           <tr>
-            <td colspan="6">
+            <td colspan="{% if can_revoke_invites %}6{% else %}5{% endif %}">
               <div class="empty-state">
                 <svg class="empty-state__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
                 <div class="empty-state__title">{{ t('empty_no_invites') }}</div>

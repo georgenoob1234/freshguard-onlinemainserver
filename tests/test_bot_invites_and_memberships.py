@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.roles import clear_roles_cache
+from app.security import hash_token
 
 
 @pytest.fixture()
@@ -386,6 +387,103 @@ def test_redeem_same_store_twice_is_idempotent(client_and_db):
     )
     assert invite_row is not None
     assert int(invite_row["used_count"]) == 1
+
+
+def test_redeem_supports_unlimited_staff_invites(client_and_db):
+    client, database_path = client_and_db
+    inviter, store = _prepare_store_admin(
+        client,
+        database_path,
+        provider_user_id="telegram-admin-unlimited-1",
+        provider_chat_id="telegram-chat-admin-unlimited-1",
+        username="admin_unlimited_user",
+        store_display_name="Unlimited Invite Store",
+    )
+    invite_code = "999999"
+    invite_id = str(uuid.uuid4())
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO staff_invites (
+                invite_id,
+                store_id,
+                code_hash,
+                role,
+                created_by_user_id,
+                created_at,
+                expires_at,
+                max_uses,
+                used_count,
+                revoked_at,
+                note
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                invite_id,
+                store["store_id"],
+                hash_token(invite_code, "secret-test-salt"),
+                "viewer",
+                inviter["user_id"],
+                datetime.now(timezone.utc).isoformat(),
+                None,
+                None,
+                0,
+                None,
+                "unlimited invite for redeem test",
+            ),
+        )
+        connection.commit()
+
+    invitee = _ensure_user(
+        client,
+        provider_user_id="telegram-invitee-unlimited-1",
+        provider_chat_id="telegram-chat-invitee-unlimited-1",
+        username="invitee_unlimited_user",
+    )
+    redeem_response = client.post(
+        "/bot/v1/invites/redeem",
+        json={
+            "provider": "telegram",
+            "provider_user_id": "telegram-invitee-unlimited-1",
+            "invite_code": invite_code,
+        },
+        headers=_bot_headers(),
+    )
+    assert redeem_response.status_code == 200
+    body = redeem_response.json()
+    assert body["status"] == "linked"
+    assert body["already_linked"] is False
+    assert body["store"]["store_id"] == store["store_id"]
+    assert body["role"] == "viewer"
+
+    membership_row = _fetch_one(
+        database_path,
+        """
+        SELECT role, revoked_at
+        FROM store_memberships
+        WHERE store_id = ? AND user_id = ?
+        """,
+        (store["store_id"], invitee["user_id"]),
+    )
+    assert membership_row is not None
+    assert membership_row["role"] == "viewer"
+    assert membership_row["revoked_at"] is None
+
+    invite_row = _fetch_one(
+        database_path,
+        """
+        SELECT used_count, max_uses, expires_at
+        FROM staff_invites
+        WHERE invite_id = ?
+        """,
+        (invite_id,),
+    )
+    assert invite_row is not None
+    assert int(invite_row["used_count"]) == 1
+    assert invite_row["max_uses"] is None
+    assert invite_row["expires_at"] is None
 
 
 @pytest.mark.parametrize(

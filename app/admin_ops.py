@@ -30,6 +30,10 @@ from app.models import (
 from app.realtime import connection_manager
 from app.roles import get_role_priority, is_known_role, is_permission_granted
 from app.security import generate_token, hash_token
+from app.staff_invite_policy import (
+    generate_unique_staff_invite_code,
+    normalize_staff_invite_role,
+)
 from app.user_context import (
     get_user_context_row as _get_user_context_row,
     normalize_user_context_after_membership_change,
@@ -134,14 +138,14 @@ def _parse_iso_datetime(raw_value: str | None) -> datetime | None:
 def _derive_lifecycle_status(
     *,
     revoked_at: str | None,
-    expires_at: str,
+    expires_at: str | None,
     used_count: int,
-    max_uses: int,
+    max_uses: int | None,
     now_utc: datetime,
 ) -> str:
     if revoked_at is not None:
         return "revoked"
-    if used_count >= max_uses:
+    if max_uses is not None and used_count >= max_uses:
         return "exhausted"
     expires_at_dt = _parse_iso_datetime(expires_at)
     if expires_at_dt is not None and expires_at_dt <= now_utc:
@@ -895,6 +899,111 @@ def create_enroll_token(
     )
 
 
+def create_staff_invite_for_admin_ui(
+    connection: sqlite3.Connection,
+    *,
+    store_id: str,
+    role: str,
+    note: str | None,
+    expires_at: str | None,
+    max_uses: int | None,
+    created_by_user_id: str | None,
+    secret_salt: str,
+    scoped_store_ids: frozenset[str] | None = None,
+) -> dict[str, object]:
+    normalized_scope = _normalize_scoped_store_ids(scoped_store_ids)
+    if normalized_scope is not None and store_id not in normalized_scope:
+        raise HTTPException(status_code=404, detail="unknown_store")
+
+    normalized_role = normalize_staff_invite_role(role)
+    normalized_note = (note or "").strip() or None
+    if normalized_note is not None and len(normalized_note) > 500:
+        raise HTTPException(status_code=400, detail="invalid_note")
+    if max_uses is not None and max_uses < 1:
+        raise HTTPException(status_code=400, detail="invalid_max_uses")
+    if expires_at is not None:
+        try:
+            _parse_iso_datetime(expires_at)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="invalid_expires_at") from error
+
+    store_row = connection.execute(
+        """
+        SELECT is_active
+        FROM stores
+        WHERE store_id = ?
+        """,
+        (store_id,),
+    ).fetchone()
+    if store_row is None:
+        raise HTTPException(status_code=400, detail="unknown_store")
+    if int(store_row["is_active"]) != 1:
+        raise HTTPException(status_code=400, detail="store_inactive")
+
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        now_utc = datetime.now(timezone.utc)
+        invite_id = str(uuid.uuid4())
+        invite_code, code_hash = generate_unique_staff_invite_code(
+            connection,
+            secret_salt=secret_salt,
+            now_utc=now_utc,
+        )
+        created_at = now_utc.isoformat()
+
+        connection.execute(
+            """
+            INSERT INTO staff_invites (
+                invite_id,
+                store_id,
+                code_hash,
+                role,
+                created_by_user_id,
+                created_at,
+                expires_at,
+                max_uses,
+                used_count,
+                revoked_at,
+                note
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                invite_id,
+                store_id,
+                code_hash,
+                normalized_role,
+                created_by_user_id,
+                created_at,
+                expires_at,
+                max_uses,
+                0,
+                None,
+                normalized_note,
+            ),
+        )
+        connection.commit()
+    except HTTPException:
+        rollback_quietly(connection)
+        raise
+    except Exception as error:
+        rollback_quietly(connection)
+        raise HTTPException(status_code=500, detail="Internal server error.") from error
+    return {
+        "invite_id": invite_id,
+        "invite_code": invite_code,
+        "store_id": store_id,
+        "role": normalized_role,
+        "created_by_user_id": created_by_user_id,
+        "created_at": created_at,
+        "expires_at": expires_at,
+        "max_uses": max_uses,
+        "used_count": 0,
+        "revoked_at": None,
+        "note": normalized_note,
+    }
+
+
 def list_enroll_tokens(
     connection: sqlite3.Connection,
     *,
@@ -1030,7 +1139,7 @@ def list_staff_invites_for_store(
             "created_by_user_id": row["created_by_user_id"],
             "created_at": row["created_at"],
             "expires_at": row["expires_at"],
-            "max_uses": int(row["max_uses"]),
+            "max_uses": int(row["max_uses"]) if row["max_uses"] is not None else None,
             "used_count": int(row["used_count"]),
             "revoked_at": row["revoked_at"],
             "note": row["note"],
@@ -1038,7 +1147,7 @@ def list_staff_invites_for_store(
                 revoked_at=row["revoked_at"],
                 expires_at=row["expires_at"],
                 used_count=int(row["used_count"]),
-                max_uses=int(row["max_uses"]),
+                max_uses=int(row["max_uses"]) if row["max_uses"] is not None else None,
                 now_utc=now_utc,
             ),
         }
